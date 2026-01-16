@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Set New Password{% endblock title %}
+{% block content %}
+<section class="card">
+    <h1>Choose a new password</h1>
+    <p class="muted">Token: {{ token }}</p>
+    <form method="post" action="/reset/confirm/{{ token }}">
+        <div class="stack">
+            <label for="password">New password</label>
+            <input id="password" name="password" type="password" required autocomplete="new-password" placeholder="••••••••">
+        </div>
+        <div class="stack">
+            <label for="confirm_password">Confirm password</label>
+            <input id="confirm_password" name="confirm_password" type="password" required autocomplete="new-password" placeholder="••••••••">
+        </div>
+        <div class="inline-actions">
+            <button type="submit">Update password</button>
+            <a class="muted" href="/login">Return to login</a>
+        </div>
+    </form>
+</section>
+{% endblock content %}

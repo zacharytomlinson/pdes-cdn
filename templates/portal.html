@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}Portal{% endblock title %}
+{% block header_actions %}
+    <div class="profile-chip">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 12a5 5 0 100-10 5 5 0 000 10zM4 20a8 8 0 0116 0" />
+        </svg>
+        <span>{{ user_email | default(value="unknown") }}</span>
+        <a class="pill-action icon-link" href="/logout" aria-label="Logout">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+        </a>
+    </div>
+{% endblock header_actions %}
+{% block content %}
+<section class="card">
+    <h1>Node cache</h1>
+    <p class="muted">Download files cached locally on this node.</p>
+    <div class="stack">
+        <div id="summary-panel"
+             hx-get="{{ cache_summary_endpoint | default(value="/cache-summary") }}"
+             hx-trigger="load"
+             hx-target="#summary-panel"
+             hx-swap="outerHTML">
+            <div class="inline-actions">
+                <span class="muted">Loading cache summary…</span>
+                <span class="hx-indicator" aria-hidden="true"></span>
+            </div>
+        </div>
+        <div id="file-panel"
+             hx-get="{{ files_endpoint | default(value="/files") }}"
+             hx-trigger="load"
+             hx-target="#file-panel"
+             hx-swap="outerHTML">
+            <div class="inline-actions">
+                <span class="muted">Loading cached files…</span>
+                <span class="hx-indicator" aria-hidden="true"></span>
+            </div>
+        </div>
+    </div>
+</section>
+
+{% if can_write %}
+<section class="card">
+    <h2 style="margin-top: 0;">Upload new artifact</h2>
+    <p class="muted">Writers can upload .bin, .elf, .msi, or .deb artifacts into the cache.</p>
+    <form method="post" action="/upload" enctype="multipart/form-data">
+        <div class="stack">
+            <label for="bucket_path">Target bucket</label>
+            <select id="bucket_path" name="bucket_path">
+                <option value="root">root</option>
+                {% for bucket in buckets | default(value=[]) %}
+                    <option value="{{ bucket.project }}/{{ bucket.bucket }}">{{ bucket.project }}/{{ bucket.bucket }}</option>
+                {% endfor %}
+            </select>
+            <p class="muted">Pipelines will automatically use their assigned bucket via tokens; choose one here to mirror that layout.</p>
+        </div>
+        <div class="stack">
+            <label for="file">Select file (.bin, .elf, .msi, .deb)</label>
+            <input type="file" id="file" name="file" accept=".bin,.elf,.msi,.deb" required>
+        </div>
+        <div class="inline-actions">
+            <button type="submit" class="icon-btn" aria-label="Upload">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+                    <polyline points="7 9 12 4 17 9" />
+                    <line x1="12" y1="4" x2="12" y2="16" />
+                </svg>
+            </button>
+            <span class="muted">Max size depends on server limits.</span>
+        </div>
+    </form>
+</section>
+
+<section class="card">
+    <h2 style="margin-top: 0;">Project buckets & tokens</h2>
+    <p class="muted">Create buckets for each project to receive pipeline uploads. Share the token with trusted pipelines only.</p>
+    {% if new_token %}
+        <div class="alert success">Created {{ new_bucket_path }} with token: <code>{{ new_token }}</code></div>
+    {% endif %}
+    <form method="post" action="/buckets">
+        <div class="stack">
+            <label for="project">Project name</label>
+            <input id="project" name="project" type="text" required placeholder="project-name">
+        </div>
+        <div class="stack">
+            <label for="bucket">Bucket name</label>
+            <input id="bucket" name="bucket" type="text" required placeholder="release-artifacts">
+        </div>
+        <div class="inline-actions">
+            <button type="submit" class="icon-btn" aria-label="Create bucket">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="9" />
+                    <line x1="12" y1="8" x2="12" y2="16" />
+                    <line x1="8" y1="12" x2="16" y2="12" />
+                </svg>
+            </button>
+            <span class="muted">Tokens are per project bucket; rotate periodically.</span>
+        </div>
+    </form>
+    <div style="margin-top: 12px;">
+        {% if buckets | length == 0 %}
+            <p class="muted">No buckets yet. Create one to generate an upload token.</p>
+        {% else %}
+            <table>
+                <thead>
+                <tr>
+                    <th>Bucket</th>
+                    <th>Token</th>
+                    <th>Created</th>
+                    <th></th>
+                </tr>
+                </thead>
+                <tbody>
+                {% for bucket in buckets %}
+                    <tr>
+                        <td>{{ bucket.project }}/{{ bucket.bucket }}</td>
+                        <td><code>{{ bucket.token }}</code></td>
+                        <td>{{ bucket.created_at }}</td>
+                        <td>
+                            <form method="post" action="/buckets/{{ bucket.id }}/delete" onsubmit="return confirm('Delete this bucket and its files?');">
+                                <button class="secondary icon-btn" type="submit" aria-label="Delete bucket">
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                        <polyline points="3 6 5 6 21 6" />
+                                        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                                        <path d="M10 11v6" />
+                                        <path d="M14 11v6" />
+                                        <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                                    </svg>
+                                </button>
+                            </form>
+                        </td>
+                    </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        {% endif %}
+    </div>
+</section>
+{% else %}
+<section class="card">
+    <h2 style="margin-top: 0;">Uploads</h2>
+    <p class="muted">You have reader access. Contact an admin for writer permissions to upload new archives.</p>
+</section>
+{% endif %}
+{% endblock content %}

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Reset Password{% endblock title %}
+{% block content %}
+<section class="card">
+    <h1>Password reset</h1>
+    <p class="muted">Send a reset link to the email on file.</p>
+    {% if message %}
+        <div class="alert success">{{ message }}</div>
+    {% endif %}
+    {% if token_preview %}
+        <div class="alert">Dev preview token: <strong>{{ token_preview }}</strong></div>
+    {% endif %}
+    <form method="post" action="/reset">
+        <div class="stack">
+            <label for="email">Email</label>
+            <input id="email" name="email" type="email" required autocomplete="email" placeholder="admin@example.com">
+        </div>
+        <div class="inline-actions">
+            <button type="submit">Send reset link</button>
+            <a class="muted" href="/login">Back to login</a>
+        </div>
+    </form>
+</section>
+{% endblock content %}

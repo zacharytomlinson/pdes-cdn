@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ app_name }} · {% block title %}{% endblock title %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+    <style>
+        :root {
+            --ink: #0f172a;
+            --panel: #111827;
+            --accent: #0ea5e9;
+            --accent-strong: #06b6d4;
+            --soft: #cbd5e1;
+            --border: #1f2937;
+            --warn: #ef4444;
+            --success: #22c55e;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: "Space Grotesk", "Segoe UI", sans-serif;
+            background: radial-gradient(circle at 20% 20%, rgba(14,165,233,0.12), transparent 30%),
+                        radial-gradient(circle at 80% 0%, rgba(6,182,212,0.12), transparent 25%),
+                        #0b1222;
+            color: #e2e8f0;
+            min-height: 100vh;
+            padding: 32px 20px 64px;
+        }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: var(--accent-strong); }
+        .page {
+            max-width: 1080px;
+            margin: 0 auto;
+        }
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+        }
+        .brand {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            font-size: 20px;
+        }
+        .brand svg { height: 38px; width: auto; display: block; }
+        .profile-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            background: rgba(14,165,233,0.12);
+            border: 1px solid rgba(14,165,233,0.35);
+            border-radius: 12px;
+            color: #e2e8f0;
+            cursor: pointer;
+        }
+        .profile-chip svg { width: 22px; height: 22px; display: block; }
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: rgba(14,165,233,0.15);
+            border: 1px solid rgba(14,165,233,0.3);
+            border-radius: 12px;
+            color: #e2e8f0;
+        }
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 15px 60px rgba(0,0,0,0.35);
+        }
+        .card h1, .card h2 { margin-top: 0; }
+        form {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+        label { font-size: 14px; color: var(--soft); }
+        input, button, select {
+            font-family: inherit;
+            font-size: 16px;
+        }
+        input {
+            padding: 12px 14px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: #0b1425;
+            color: #e2e8f0;
+        }
+        select {
+            padding: 12px 14px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: #0b1425;
+            color: #e2e8f0;
+        }
+        details summary {
+            cursor: pointer;
+            font-weight: 600;
+            padding: 6px 0;
+        }
+        details {
+            border-left: 2px solid var(--border);
+            padding-left: 10px;
+            margin-bottom: 6px;
+        }
+        input:focus {
+            outline: 2px solid rgba(14,165,233,0.45);
+            border-color: rgba(14,165,233,0.65);
+        }
+        button {
+            cursor: pointer;
+            border: none;
+            border-radius: 12px;
+            padding: 12px 16px;
+            background: linear-gradient(120deg, var(--accent), var(--accent-strong));
+            color: #0b1222;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+            transition: transform 120ms ease, box-shadow 120ms ease;
+        }
+        button:hover { transform: translateY(-1px); box-shadow: 0 10px 30px rgba(6,182,212,0.3); }
+        button.secondary {
+            background: transparent;
+            color: #e2e8f0;
+            border: 1px solid var(--border);
+            box-shadow: none;
+        }
+        .icon-btn, .icon-link {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .icon-btn svg, .icon-link svg { width: 16px; height: 16px; display: block; }
+        .inline-actions { display: flex; justify-content: space-between; align-items: center; }
+        .muted { color: var(--soft); font-size: 14px; }
+        .stack { display: flex; flex-direction: column; gap: 10px; }
+        .alert {
+            border-radius: 12px;
+            padding: 12px 14px;
+            border: 1px solid rgba(239,68,68,0.4);
+            color: #fecdd3;
+            background: rgba(239,68,68,0.12);
+        }
+        .alert.success {
+            border-color: rgba(34,197,94,0.5);
+            color: #bbf7d0;
+            background: rgba(34,197,94,0.12);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 8px;
+        }
+        th, td {
+            text-align: left;
+            padding: 12px 10px;
+            border-bottom: 1px solid var(--border);
+        }
+        tr:last-child td { border-bottom: none; }
+        th { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--soft); }
+        .pill-action {
+            display: inline-flex;
+            gap: 6px;
+            align-items: center;
+            padding: 8px 10px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            color: #e2e8f0;
+        }
+        .badge {
+            padding: 4px 8px;
+            border-radius: 8px;
+            background: rgba(14,165,233,0.15);
+            color: #bae6fd;
+            font-size: 12px;
+        }
+        .hx-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 0 rgba(14,165,233,0.35);
+            animation: pulse 1.4s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(14,165,233,0.3); }
+            70% { transform: scale(1); box-shadow: 0 0 0 12px rgba(14,165,233,0); }
+            100% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(14,165,233,0); }
+        }
+        @media (max-width: 720px) {
+            body { padding: 18px 14px 48px; }
+            header { flex-direction: column; align-items: flex-start; gap: 10px; }
+            .inline-actions { flex-direction: column; gap: 12px; align-items: flex-start; }
+            button, input { width: 100%; }
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+    <header>
+        <div class="brand">
+            <svg width="138.96773mm" height="22.955542mm" viewBox="0 0 138.96773 22.955541" version="1.1" xmlns="http://www.w3.org/2000/svg" aria-label="PDES">
+                <g transform="translate(-16.289944,-116.30658)">
+                    <g>
+                        <g transform="matrix(0.23371657,0,0,0.23371657,4.6782887,99.431161)">
+                            <path style="fill:#e2e8f0;" d="m 121.03252,168.95537 c -8.16988,-2.09001 -7.40741,-1.46953 -11.51173,-9.368 -2.44337,-4.7021 -5.64107,-10.7555 -7.83588,-14.83369 -4.442935,-8.25548 -13.259055,-11.25964 -16.643824,-5.67152 -2.155113,3.55802 -2.929977,3.60953 -8.821347,0.58644 -4.438372,-2.2775 -5.638128,-3.34341 -6.203354,-5.51133 -0.981922,-3.76615 -4.07093,-8.49779 -7.839602,-12.00844 -10.207627,-9.50877 -10.19619,-9.525 6.711581,-9.525 14.58216,0 12.842859,0.88308 13.084504,-6.64326 0.99258,-30.915091 1.135561,-32.616021 2.818119,-33.524761 0.92042,-0.49711 21.172063,-0.18877 22.190453,0.33787 1.77872,0.91981 1.7265,0.63203 1.87215,10.31634 0.15091,10.03415 -0.0414,9.30974 2.70147,10.17536 1.0608,0.33478 2.40498,0.76951 2.98707,0.96607 2.64813,0.89423 8.85824,2.76965 10.05416,3.03631 0.87244,0.19454 4.43125,0.26913 10.45105,0.21907 l 9.12812,-0.0759 2.85392,0.98987 c 6.86511,2.381131 6.80337,2.295941 6.80337,9.387951 0,5.98931 0.12005,6.48668 2.45744,10.18128 2.54386,4.02097 2.76361,4.71983 2.31033,7.34728 -1.95382,11.32522 -0.64824,9.7046 -14.14049,17.55258 -11.33243,6.59168 -10.62724,5.9838 -13.35507,11.51223 -2.39267,4.84917 -2.51668,5.94033 -1.23331,10.85166 1.53795,5.88561 0.84026,6.17778 -8.83913,3.7016 z m 6.60648,-1.41022 c 0,-0.0616 -0.3739,-1.63919 -0.83089,-3.50573 -1.10766,-4.52416 -1.00428,-5.1185 1.92419,-11.06266 2.82805,-5.74035 3.21548,-6.14406 8.96087,-9.33747 1.17034,-0.6505 13.59847,-7.97612 14.73765,-8.68694 1.73684,-1.08375 2.21274,-2.34136 3.16306,-8.35868 0.55171,-3.4934 0.45785,-3.87182 -1.8924,-7.62984 -2.34275,-3.74603 -2.50902,-4.40213 -2.54093,-10.02604 -0.0369,-6.51083 0.24029,-6.09374 -5.28482,-7.95068 l -2.49402,-0.83821 -5.95312,0.0859 c -9.62771,0.13893 -12.51182,0.0887 -13.49375,-0.234836 -0.50933,-0.16784 -2.3548,-0.738065 -4.10105,-1.267185 -1.74625,-0.52911 -3.47265,-1.06331 -3.83645,-1.18711 -0.36381,-0.12379 -2.26697,-0.72642 -4.22925,-1.33916 -5.88958,-1.83909 -5.56034,-1.1297 -5.56034,-11.98032 0,-10.35052 1.47343,-9.04566 -10.465305,-9.26801 -11.5481,-0.21507 -9.783425,-2.11513 -10.285867,11.07504 -0.232815,6.11187 -0.554796,14.565301 -0.715514,18.785401 -0.43663,11.46497 0.941008,10.45008 -14.185915,10.45063 -6.459611,2.4e-4 -11.178647,0.10108 -11.178647,0.23888 0,0.13116 1.671968,1.81881 3.715483,3.75034 5.205877,4.92058 7.33815,7.91189 9.117595,12.79082 1.506131,4.12955 8.820272,8.21398 10.3138,5.75953 2.160218,-3.55009 2.907955,-4.02975 6.560385,-4.20837 4.43238,-0.21676 11.160545,3.33618 13.510405,7.13444 0.42658,0.68952 0.89412,1.56589 4.34095,8.13686 0.8015,1.52797 1.78363,3.37344 2.1825,4.10104 0.39887,0.7276 1.47189,2.75167 2.38449,4.49792 3.94772,7.55392 3.63239,7.21436 7.61161,8.19646 1.56021,0.38507 3.9083,0.97747 5.21799,1.31645 2.37697,0.61522 3.30729,0.77318 3.30729,0.56153 z"/>
+                        </g>
+                    </g>
+                </g>
+            </svg>
+            <span>{{ app_name }}</span>
+        </div>
+        {% block header_actions %}{% endblock header_actions %}
+    </header>
+    <main>
+        {% block content %}{% endblock content %}
+    </main>
+</div>
+</body>
+</html>
