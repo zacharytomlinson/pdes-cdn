@@ -44,4 +44,4 @@ jobs:
           name: Release ${{ github.ref_name }}
           token: ${{ secrets.pdes_cdn_release }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.pdes_cdn_release }}
