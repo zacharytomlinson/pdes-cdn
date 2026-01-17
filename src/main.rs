@@ -17,6 +17,11 @@ use axum_extra::extract::cookie::{Cookie, Key};
 use axum_extra::extract::SignedCookieJar;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use dotenvy::dotenv;
+use lettre::{
+    message::{Mailbox, Message},
+    transport::smtp::authentication::Credentials,
+    AsyncSmtpTransport, AsyncTransport, Tokio1Executor,
+};
 use moka::future::Cache;
 use rand::{distributions::Alphanumeric, rngs::OsRng, Rng};
 use serde::Deserialize;
@@ -89,6 +94,7 @@ struct User {
     permission: String,
     reset_token: Option<String>,
     reset_token_expires: Option<DateTime<Utc>>,
+    must_reset: bool,
 }
 
 #[derive(Debug, Clone, FromRow, serde::Serialize)]
@@ -147,6 +153,11 @@ struct ResetConfirmForm {
 struct CreateBucketForm {
     project: String,
     bucket: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct InviteUserForm {
+    email: String,
 }
 
 #[tokio::main]
@@ -212,6 +223,7 @@ async fn main() -> AppResult<()> {
         .route("/cache-summary", get(cache_summary))
         .route("/buckets", axum::routing::post(create_bucket))
         .route("/buckets/:id/delete", post(delete_bucket))
+        .route("/invite", axum::routing::post(invite_user))
         .route("/upload", axum::routing::post(upload_file))
         .route("/api/upload", axum::routing::post(api_upload))
         .route("/download/:id", get(download_file))
@@ -246,7 +258,7 @@ async fn do_login(
     Form(form): Form<LoginForm>,
 ) -> AppResult<Response> {
     let user = sqlx::query_as::<_, User>(
-        "select id, email, password_hash, permission, reset_token, reset_token_expires from users where email = $1",
+        "select id, email, password_hash, permission, reset_token, reset_token_expires, must_reset from users where email = $1",
     )
     .bind(&form.email)
     .fetch_optional(&state.pool)
@@ -265,6 +277,11 @@ async fn do_login(
     {
         return render_login_error(&state, "Invalid credentials")
             .map(|html| html.into_response());
+    }
+
+    if user.must_reset {
+        let token = issue_reset_token(&state, user.id).await?;
+        return Ok(Redirect::to(&format!("/reset/confirm/{}", token)).into_response());
     }
 
     let cookie = Cookie::build((SESSION_COOKIE, user.id.to_string()))
@@ -340,7 +357,7 @@ async fn do_reset_confirm(
         .to_string();
 
     sqlx::query(
-        "update users set password_hash = $1, reset_token = null, reset_token_expires = null where id = $2",
+        "update users set password_hash = $1, reset_token = null, reset_token_expires = null, must_reset = false where id = $2",
     )
     .bind(password_hash)
     .bind(user.id)
@@ -660,6 +677,86 @@ async fn delete_bucket(
     Ok((jar, Redirect::to("/portal")).into_response())
 }
 
+async fn invite_user(
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Form(form): Form<InviteUserForm>,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+
+    let email = form.email.trim().to_lowercase();
+    if email.is_empty() {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "Email is required",
+        ));
+    }
+
+    let existing = sqlx::query_scalar::<_, Uuid>("select id from users where email = $1")
+        .bind(&email)
+        .fetch_optional(&state.pool)
+        .await?;
+    if existing.is_some() {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "User already exists",
+        ));
+    }
+
+    let placeholder: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(16)
+        .map(char::from)
+        .collect();
+    let salt = SaltString::generate(&mut OsRng);
+    let password_hash = Argon2::default()
+        .hash_password(placeholder.as_bytes(), &salt)
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Could not hash password"))?
+        .to_string();
+    let id = Uuid::new_v4();
+
+    sqlx::query(
+        "insert into users (id, email, password_hash, permission, must_reset) values ($1, $2, $3, 'reader', true)",
+    )
+    .bind(id)
+    .bind(&email)
+    .bind(password_hash)
+    .execute(&state.pool)
+    .await?;
+
+    let reset_token = issue_reset_token(&state, id).await?;
+
+    let reset_link = format!("/reset/confirm/{}", reset_token);
+    let body = format!(
+        "Welcome to the CDN portal.\n\nTemporary password: {pwd}\nLogin: {login}\nReset link (required on first login): {link}\n\nIf you did not expect this, please contact support@palodurosystems.io.",
+        pwd = placeholder,
+        login = email,
+        link = reset_link
+    );
+    let subject = "Your CDN portal access";
+    let _ = send_email(&email, subject, &body).await;
+
+    let buckets = fetch_buckets(&state).await?;
+    let mut ctx = TeraContext::new();
+    ctx.insert("user_email", &user.email);
+    ctx.insert("files_endpoint", "/files");
+    ctx.insert("cache_summary_endpoint", "/cache-summary");
+    ctx.insert("can_write", &true);
+    ctx.insert("buckets", &buckets);
+    ctx.insert("new_invite_email", &email);
+    let html = render_template(&state, "portal.html", ctx)?;
+    Ok((jar, html).into_response())
+}
+
 async fn download_file(
     Path(id): Path<Uuid>,
     State(state): State<AppState>,
@@ -712,7 +809,7 @@ async fn current_user(state: &AppState, jar: &SignedCookieJar) -> AppResult<Opti
         .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid session token"))?;
 
     let user = sqlx::query_as::<_, User>(
-        "select id, email, password_hash, permission, reset_token, reset_token_expires from users where id = $1",
+        "select id, email, password_hash, permission, reset_token, reset_token_expires, must_reset from users where id = $1",
     )
     .bind(user_id)
     .fetch_optional(&state.pool)
@@ -723,7 +820,7 @@ async fn current_user(state: &AppState, jar: &SignedCookieJar) -> AppResult<Opti
 
 async fn ensure_valid_token(state: &AppState, token: &str) -> AppResult<User> {
     let user = sqlx::query_as::<_, User>(
-        "select id, email, password_hash, permission, reset_token, reset_token_expires from users where reset_token = $1",
+        "select id, email, password_hash, permission, reset_token, reset_token_expires, must_reset from users where reset_token = $1",
     )
     .bind(token)
     .fetch_optional(&state.pool)
@@ -1017,6 +1114,65 @@ fn extract_bearer(headers: &HeaderMap) -> Option<String> {
                 .or_else(|| value.strip_prefix("bearer "))
         })
         .map(|s| s.trim().to_string())
+}
+
+async fn issue_reset_token(state: &AppState, user_id: Uuid) -> AppResult<String> {
+    let token: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(32)
+        .map(char::from)
+        .collect();
+    let expires = Utc::now() + ChronoDuration::minutes(30);
+
+    sqlx::query(
+        "update users set reset_token = $1, reset_token_expires = $2, must_reset = true where id = $3",
+    )
+    .bind(&token)
+    .bind(expires)
+    .bind(user_id)
+    .execute(&state.pool)
+    .await?;
+
+    Ok(token)
+}
+
+async fn send_email(to: &str, subject: &str, body: &str) -> AppResult<()> {
+    let host = std::env::var("SMTP_HOST").unwrap_or_default();
+    let username = std::env::var("SMTP_USERNAME").unwrap_or_default();
+    let password = std::env::var("SMTP_PASSWORD").unwrap_or_default();
+    let port: u16 = std::env::var("SMTP_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(587);
+    let from = std::env::var("SMTP_FROM").unwrap_or_else(|_| "support@palodurosystems.io".to_string());
+
+    if host.is_empty() {
+        return Err(AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Email not configured",
+        ));
+    }
+
+    let email = Message::builder()
+        .from(from.parse::<Mailbox>().map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Invalid FROM email"))?)
+        .to(to.parse::<Mailbox>().map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid recipient email"))?)
+        .subject(subject)
+        .body(body.to_string())
+        .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed to build email"))?;
+
+    let creds = Credentials::new(username, password);
+    let mailer = AsyncSmtpTransport::<Tokio1Executor>::relay(&host)
+        .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed to create mailer"))?
+        .port(port)
+        .credentials(creds)
+        .build();
+
+    mailer
+        .send(email)
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to send email: {}", e)))?;
+
+    Ok(())
 }
 
 fn render_template(

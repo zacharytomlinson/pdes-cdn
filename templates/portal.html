@@ -18,7 +18,7 @@
 {% block content %}
 <section class="card">
     <h1>Node cache</h1>
-    <p class="muted">Download files cached locally on this node.</p>
+    <p class="muted">Firmware Provided to you by Palo Duro Embedded Systems</p>
     <div class="stack">
         <div id="summary-panel"
              hx-get="{{ cache_summary_endpoint | default(value="/cache-summary") }}"
@@ -46,7 +46,6 @@
 {% if can_write %}
 <section class="card">
     <h2 style="margin-top: 0;">Upload new artifact</h2>
-    <p class="muted">Writers can upload .bin, .elf, .msi, or .deb artifacts into the cache.</p>
     <form method="post" action="/upload" enctype="multipart/form-data">
         <div class="stack">
             <label for="bucket_path">Target bucket</label>
@@ -56,7 +55,6 @@
                     <option value="{{ bucket.project }}/{{ bucket.bucket }}">{{ bucket.project }}/{{ bucket.bucket }}</option>
                 {% endfor %}
             </select>
-            <p class="muted">Pipelines will automatically use their assigned bucket via tokens; choose one here to mirror that layout.</p>
         </div>
         <div class="stack">
             <label for="file">Select file (.bin, .elf, .msi, .deb)</label>
@@ -70,7 +68,6 @@
                     <line x1="12" y1="4" x2="12" y2="16" />
                 </svg>
             </button>
-            <span class="muted">Max size depends on server limits.</span>
         </div>
     </form>
 </section>
@@ -80,6 +77,9 @@
     <p class="muted">Create buckets for each project to receive pipeline uploads. Share the token with trusted pipelines only.</p>
     {% if new_token %}
         <div class="alert success">Created {{ new_bucket_path }} with token: <code>{{ new_token }}</code></div>
+    {% endif %}
+    {% if new_invite_email %}
+        <div class="alert success">Invited {{ new_invite_email }} with a temporary password emailed to them.</div>
     {% endif %}
     <form method="post" action="/buckets">
         <div class="stack">
@@ -101,6 +101,24 @@
             <span class="muted">Tokens are per project bucket; rotate periodically.</span>
         </div>
     </form>
+    <div style="margin-top: 16px;">
+        <h3 style="margin: 0 0 8px 0;">Invite user</h3>
+        <form method="post" action="/invite">
+            <div class="stack">
+                <label for="invite_email">User email</label>
+                <input id="invite_email" name="email" type="email" required placeholder="user@example.com">
+            </div>
+            <div class="inline-actions">
+                <button type="submit" class="icon-btn" aria-label="Invite user">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="9" />
+                        <line x1="12" y1="8" x2="12" y2="16" />
+                        <line x1="8" y1="12" x2="16" y2="12" />
+                    </svg>
+                </button>
+            </div>
+        </form>
+    </div>
     <div style="margin-top: 12px;">
         {% if buckets | length == 0 %}
             <p class="muted">No buckets yet. Create one to generate an upload token.</p>
