@@ -42,6 +42,6 @@ jobs:
             target/release/pdes-cdn
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
-          token: ${{ secrets.pdes_cdn_release }}
+          token: ${{ secrets.GH_RELEASE_TOKEN }}
         env:
-          GITHUB_TOKEN: ${{ secrets.pdes_cdn_release }}
+          GITHUB_TOKEN: ${{ secrets.GH_RELEASE_TOKEN }}
