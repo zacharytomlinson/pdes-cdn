@@ -24,7 +24,13 @@ jobs:
 
       - name: Install cross toolchain for aarch64
         if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            pkg-config-aarch64-linux-gnu \
+            libssl-dev:arm64
 
       - name: Cache cargo build
         uses: actions/cache@v4
@@ -40,6 +46,9 @@ jobs:
       - name: Build release binary
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          PKG_CONFIG: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '/usr/bin/aarch64-linux-gnu-pkg-config' || '' }}
+          PKG_CONFIG_PATH: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '/usr/lib/aarch64-linux-gnu/pkgconfig' || '' }}
+          OPENSSL_DIR: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '/usr/aarch64-linux-gnu' || '' }}
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Upload build artifact
