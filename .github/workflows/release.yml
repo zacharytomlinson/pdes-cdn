@@ -26,27 +26,26 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo dpkg --add-architecture arm64
-          # Remove default sources (which include security.ubuntu.com without arch filters)
+          # Remove default sources and pin amd64 to azure mirror
           sudo rm -f /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources
-          # Pin amd64 repos to amd64 only
-          sudo sh -c "cat > /etc/apt/sources.list <<'EOF'
-          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble main restricted universe multiverse
-          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
-          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-security main restricted universe multiverse
-          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse
-          EOF"
-          # Add ports.ubuntu.com for arm64 packages (azure mirrors do not host arm64)
-          sudo sh -c "cat > /etc/apt/sources.list.d/arm64.list <<'EOF'
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
-          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-backports main restricted universe multiverse
-          EOF"
+          printf '%s\n' \
+            "deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble main restricted universe multiverse" \
+            "deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse" \
+            "deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-security main restricted universe multiverse" \
+            "deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse" \
+            | sudo tee /etc/apt/sources.list >/dev/null
+          # Add ports.ubuntu.com for arm64 packages
+          printf '%s\n' \
+            "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse" \
+            "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse" \
+            "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse" \
+            "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-backports main restricted universe multiverse" \
+            | sudo tee /etc/apt/sources.list.d/arm64.list >/dev/null
           sudo apt-get update
           sudo apt-get install -y \
-          gcc-aarch64-linux-gnu \
-          pkg-config-aarch64-linux-gnu \
-          libssl-dev:arm64
+            gcc-aarch64-linux-gnu \
+            pkg-config-aarch64-linux-gnu \
+            libssl-dev:arm64
 
       - name: Cache cargo build
         uses: actions/cache@v4
@@ -77,24 +76,24 @@ jobs:
           name: pdes-cdn-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/pdes-cdn
 
-release:
-  runs-on: ubuntu-latest
-  needs: build
-  permissions:
-    contents: write
-  steps:
-    - name: Download artifacts
-      uses: actions/download-artifact@v4
-      with:
-        pattern: pdes-cdn-*
-        merge-multiple: true
-        path: artifacts
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pdes-cdn-*
+          merge-multiple: true
+          path: artifacts
 
-    - name: Create GitHub release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: |
-          artifacts/pdes-cdn-x86_64-unknown-linux-gnu/pdes-cdn#pdes-cdn-x86_64-unknown-linux-gnu
-          artifacts/pdes-cdn-aarch64-unknown-linux-gnu/pdes-cdn#pdes-cdn-aarch64-unknown-linux-gnu
-        tag_name: ${{ github.ref_name }}
-        name: Release ${{ github.ref_name }}
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/pdes-cdn-x86_64-unknown-linux-gnu/pdes-cdn#pdes-cdn-x86_64-unknown-linux-gnu
+            artifacts/pdes-cdn-aarch64-unknown-linux-gnu/pdes-cdn#pdes-cdn-aarch64-unknown-linux-gnu
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
