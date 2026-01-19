@@ -230,6 +230,13 @@ rm -f /etc/nginx/sites-enabled/default
 ln -sf /etc/nginx/sites-available/${SERVICE_NAME} /etc/nginx/sites-enabled/${SERVICE_NAME}
 nginx -t && systemctl reload nginx
 
+# Quick ACME reachability check (host-header to ensure correct server block)
+TEST_TOKEN="installer-ok"
+TEST_FILE="${CHALLENGE_ROOT}/.well-known/acme-challenge/install-test"
+echo "${TEST_TOKEN}" >"${TEST_FILE}"
+curl -fsS -H "Host: ${DOMAIN}" "http://127.0.0.1/.well-known/acme-challenge/$(basename "${TEST_FILE}")" \
+  | grep -q "${TEST_TOKEN}"
+
 if [[ -n "${DOMAIN}" && "${DOMAIN}" != "example.com" ]]; then
   certbot --nginx -d "${DOMAIN}" --non-interactive --agree-tos -m "${CERTBOT_EMAIL}" || true
 fi
@@ -244,7 +251,7 @@ echo "Service installed but not enabled/started. You can enable after verifying 
 echo "Done.
 Next steps:
 1) Edit /etc/${SERVICE_NAME}.env with real values (DATABASE_URL if changed, COOKIE_SECRET, SMTP_* etc.).
-2) Set DOMAIN and rerun certbot if not already valid: certbot --nginx -d <your-domain> -m ${CERTBOT_EMAIL} --agree-tos --non-interactive
+2) If certbot failed (see output), fix DNS and rerun: certbot --nginx -d ${DOMAIN} -m ${CERTBOT_EMAIL} --agree-tos --non-interactive
 3) (Optional) Enable service after validating env: systemctl enable ${SERVICE_NAME}
 4) Start the app: systemctl start ${SERVICE_NAME}
 4) Login with zacharytomlinson@palodurosystems.io / CdnPass1234 (must reset on first login).
