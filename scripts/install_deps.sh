@@ -13,10 +13,12 @@ fi
 APP_USER="pdescdn"
 APP_DIR="/opt/pdes-cdn"
 CACHE_DIR_DEFAULT="/var/lib/pdes-cdn/cache"
+CHALLENGE_ROOT="/var/www/letsencrypt"
 SERVICE_NAME="pdes-cdn"
 DB_NAME="${DB_NAME:-pdes_cdn}"
 DB_USER="${DB_USER:-pdes_cdn_user}"
 DB_PASS="${DB_PASS:-ChangeMeDbPass123!}"
+GH_DOWNLOAD_TOKEN="${GH_DOWNLOAD_TOKEN:-}"
 REPO="${REPO:-OWNER/REPO}"              # e.g., palodurosystems/pdes-cdn
 RELEASE_TAG="${RELEASE_TAG:-}"          # e.g., v0.0.1
 DOMAIN="${DOMAIN:-example.com}"         # set to your domain
@@ -37,7 +39,7 @@ apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
   curl ca-certificates gnupg lsb-release \
   postgresql postgresql-contrib libpq-dev \
-  pkg-config openssl \
+  pkg-config openssl ssl-cert \
   nginx certbot python3-certbot-nginx
 
 echo "[2/8] Creating app user and directories..."
@@ -47,7 +49,47 @@ chown -R "$APP_USER":"$APP_USER" "$APP_DIR" "$CACHE_DIR_DEFAULT"
 
 echo "[3/8] Downloading release binary..."
 BIN_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/pdes-cdn"
-curl -fL "$BIN_URL" -o "$APP_DIR/pdes-cdn"
+if [[ -n "$GH_DOWNLOAD_TOKEN" ]]; then
+  # Try API asset download for private repos
+  ASSET_API_URL=$(python3 - <<'PYCODE' || true
+import os, json, sys, urllib.request
+token = os.environ.get("GH_DOWNLOAD_TOKEN")
+repo = os.environ.get("REPO")
+tag = os.environ.get("RELEASE_TAG")
+name = "pdes-cdn"
+if not (token and repo and tag):
+    sys.exit(1)
+req = urllib.request.Request(
+    f"https://api.github.com/repos/{repo}/releases/tags/{tag}",
+    headers={
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "pdes-installer"
+    },
+)
+with urllib.request.urlopen(req) as resp:
+    data = json.load(resp)
+assets = data.get("assets", [])
+for a in assets:
+    if a.get("name") == name:
+        print(a.get("url", ""))
+        sys.exit(0)
+sys.exit(1)
+PYCODE
+)
+  if [[ -n "$ASSET_API_URL" ]]; then
+    curl -fL \
+      -H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}" \
+      -H "Accept: application/octet-stream" \
+      "$ASSET_API_URL" -o "$APP_DIR/pdes-cdn"
+  else
+    curl -fL \
+      -H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}" \
+      "$BIN_URL" -o "$APP_DIR/pdes-cdn"
+  fi
+else
+  curl -fL "$BIN_URL" -o "$APP_DIR/pdes-cdn"
+fi
 chmod +x "$APP_DIR/pdes-cdn"
 chown "$APP_USER":"$APP_USER" "$APP_DIR/pdes-cdn"
 
@@ -60,8 +102,39 @@ sudo -u postgres psql -d "$DB_NAME" -c "GRANT ALL ON SCHEMA public TO ${DB_USER}
 
 echo "[5/8] Running migrations..."
 export DATABASE_URL="postgres://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}"
-cargo install sqlx-cli --no-default-features --features postgres >/dev/null 2>&1 || true
-sqlx migrate run
+psql "$DATABASE_URL" >/dev/null <<'SQL'
+-- 0001_init.sql
+create table if not exists users (
+    id uuid primary key,
+    email text not null unique,
+    password_hash text not null,
+    reset_token text,
+    reset_token_expires timestamptz,
+    created_at timestamptz not null default now(),
+    permission text not null default 'reader',
+    must_reset boolean not null default false
+);
+
+create table if not exists cached_files (
+    id uuid primary key,
+    filename text not null,
+    local_path text not null,
+    size_bytes bigint,
+    created_at timestamptz not null default now()
+);
+
+create index if not exists idx_cached_files_created_at on cached_files(created_at desc);
+
+-- project_tokens table
+create table if not exists project_tokens (
+    id uuid primary key,
+    project text not null,
+    bucket text not null,
+    token text not null unique,
+    created_at timestamptz not null default now(),
+    unique (project, bucket)
+);
+SQL
 
 echo "[6/8] Seed initial writer user (zacharytomlinson@palodurosystems.io)..."
 PLACEHOLDER_HASH='$argon2id$v=19$m=19456,t=2,p=1$NTbpT0ilREk2K9+0sGsh8Q$dKzPDjDMBzlrx5GpPv1N4pXLGNpYiR94PR1yG4hIlMY' # password: CdnPass1234
@@ -111,10 +184,38 @@ EOF
 fi
 
 echo "[8/8] nginx + certbot..."
+mkdir -p "${CHALLENGE_ROOT}/.well-known/acme-challenge"
 cat >/etc/nginx/sites-available/${SERVICE_NAME} <<EOF
 server {
-    listen 80;
+    listen 80 default_server;
+    listen [::]:80 default_server;
     server_name ${DOMAIN};
+    root ${CHALLENGE_ROOT};
+
+    location ^~ /.well-known/acme-challenge/ {
+        default_type text/plain;
+        try_files \$uri =404;
+    }
+
+    location / { return 301 https://\$host\$request_uri; }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name ${DOMAIN};
+
+    # Temporary self-signed cert so nginx can start; Certbot will replace these
+    ssl_certificate /etc/ssl/certs/ssl-cert-snakeoil.pem;
+    ssl_certificate_key /etc/ssl/private/ssl-cert-snakeoil.key;
+
+    index index.html index.htm;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root ${CHALLENGE_ROOT};
+        default_type text/plain;
+        try_files \$uri =404;
+    }
 
     location / {
         proxy_set_header Host \$host;
@@ -125,6 +226,7 @@ server {
     }
 }
 EOF
+rm -f /etc/nginx/sites-enabled/default
 ln -sf /etc/nginx/sites-available/${SERVICE_NAME} /etc/nginx/sites-enabled/${SERVICE_NAME}
 nginx -t && systemctl reload nginx
 
