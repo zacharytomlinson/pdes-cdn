@@ -28,9 +28,11 @@ use serde::Deserialize;
 use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
 use sha2::{Digest, Sha512};
 use tera::{Context as TeraContext, Tera};
+use tower_http::trace::TraceLayer;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 const SESSION_COOKIE: &str = "pdes_session";
@@ -163,6 +165,14 @@ struct InviteUserForm {
 #[tokio::main]
 async fn main() -> AppResult<()> {
     dotenv().ok();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,tower_http=info".into()),
+        )
+        .with_target(false)
+        .compact()
+        .init();
 
     let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/pdes_cdn".to_string());
     let cache_dir = std::env::var("CACHE_DIR").unwrap_or_else(|_| "cache".to_string());
@@ -192,6 +202,11 @@ async fn main() -> AppResult<()> {
     let digest = hasher.finalize();
     let mut key_bytes = [0u8; 64];
     key_bytes.copy_from_slice(&digest[..]);
+    info!(
+        "Starting pdes-cdn with cache_dir={} max_upload_bytes={}",
+        cache_dir.display(),
+        max_upload_bytes
+    );
 
     let state = AppState {
         pool,
@@ -228,10 +243,11 @@ async fn main() -> AppResult<()> {
         .route("/api/upload", axum::routing::post(api_upload))
         .route("/download/:id", get(download_file))
         .layer(DefaultBodyLimit::max(max_upload_bytes))
+        .layer(TraceLayer::new_for_http())
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
-    println!("Listening on http://{}", addr);
+    info!("Listening on http://{}", addr);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(AppError::from)?;
@@ -257,6 +273,7 @@ async fn do_login(
     jar: SignedCookieJar,
     Form(form): Form<LoginForm>,
 ) -> AppResult<Response> {
+    info!(email = %form.email, "login attempt");
     let user = sqlx::query_as::<_, User>(
         "select id, email, password_hash, permission, reset_token, reset_token_expires, must_reset from users where email = $1",
     )
@@ -265,6 +282,7 @@ async fn do_login(
     .await?;
 
     let Some(user) = user else {
+        warn!(email = %form.email, "login failed: user not found");
         return render_login_error(&state, "Invalid credentials")
             .map(|html| html.into_response());
     };
@@ -275,12 +293,14 @@ async fn do_login(
         .verify_password(form.password.as_bytes(), &parsed_hash)
         .is_err()
     {
+        warn!(email = %form.email, "login failed: invalid password");
         return render_login_error(&state, "Invalid credentials")
             .map(|html| html.into_response());
     }
 
     if user.must_reset {
         let token = issue_reset_token(&state, user.id).await?;
+        info!(user_id = %user.id, email = %user.email, "login requires password reset");
         return Ok(Redirect::to(&format!("/reset/confirm/{}", token)).into_response());
     }
 
@@ -289,6 +309,7 @@ async fn do_login(
         .http_only(true)
         .build();
     let jar = jar.add(cookie);
+    info!(user_id = %user.id, email = %user.email, "login succeeded");
     Ok((jar, Redirect::to("/portal")).into_response())
 }
 
@@ -305,6 +326,7 @@ async fn do_reset_request(
     State(state): State<AppState>,
     Form(form): Form<ResetRequestForm>,
 ) -> AppResult<impl IntoResponse> {
+    info!(email = %form.email, "password reset requested");
     let token: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
         .take(32)
@@ -320,6 +342,17 @@ async fn do_reset_request(
     .bind(&form.email)
     .execute(&state.pool)
     .await?;
+
+    let base = base_url();
+    let reset_link = format!("{}/reset/confirm/{}", base.trim_end_matches('/'), token);
+    let subject = "CDN portal password reset";
+    let body = format!(
+        "We received a password reset request for this address.\n\nReset link (valid 30 minutes): {link}\nIf you did not request this, you can ignore this email.",
+        link = reset_link
+    );
+    let _ = send_email(&form.email, subject, &body).await?;
+    let token_preview: String = token.chars().take(8).collect();
+    info!(email = %form.email, token_prefix = %token_preview, "issued reset token and sent reset email");
 
     let mut ctx = TeraContext::new();
     ctx.insert("message", "If the account exists, a reset link was prepared.");
@@ -364,6 +397,7 @@ async fn do_reset_confirm(
     .execute(&state.pool)
     .await?;
 
+    info!(user_id = %user.id, email = %user.email, "password reset confirmed");
     Ok(Redirect::to("/login"))
 }
 
@@ -398,9 +432,11 @@ async fn list_files(
     headers: HeaderMap,
 ) -> AppResult<Response> {
     let Some(user) = current_user(&state, &jar).await? else {
+        warn!("list_files: unauthenticated, redirecting to login");
         let jar = jar.remove(Cookie::from(SESSION_COOKIE));
         return Ok((jar, Redirect::to("/login")).into_response());
     };
+    info!(user_id = %user.id, email = %user.email, hx = %is_hx_request(&headers), "list_files");
 
     let files = fetch_files(&state).await?;
     let mut ctx = TeraContext::new();
@@ -437,9 +473,11 @@ async fn cache_summary(
     headers: HeaderMap,
 ) -> AppResult<Response> {
     let Some(user) = current_user(&state, &jar).await? else {
+        warn!("cache_summary: unauthenticated, redirecting to login");
         let jar = jar.remove(Cookie::from(SESSION_COOKIE));
         return Ok((jar, Redirect::to("/login")).into_response());
     };
+    info!(user_id = %user.id, email = %user.email, hx = %is_hx_request(&headers), "cache_summary");
 
     let files = fetch_files(&state).await?;
     let directories = summarize_directories(&files);
@@ -476,10 +514,12 @@ async fn upload_file(
     mut multipart: Multipart,
 ) -> AppResult<Response> {
     let Some(user) = current_user(&state, &jar).await? else {
+        warn!("upload_file: unauthenticated, redirecting to login");
         let jar = jar.remove(Cookie::from(SESSION_COOKIE));
         return Ok((jar, Redirect::to("/login")).into_response());
     };
     if !is_writer(&user) {
+        warn!(user_id = %user.id, email = %user.email, "upload_file: forbidden (not writer)");
         return Err(AppError::new(
             StatusCode::FORBIDDEN,
             "Writer permission required",
@@ -528,6 +568,7 @@ async fn upload_file(
 
     state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
+    info!(user_id = %user.id, email = %user.email, bucket = ?bucket_path, "upload complete");
     Ok((jar, Redirect::to("/portal")).into_response())
 }
 
@@ -539,20 +580,23 @@ async fn api_upload(
     let token = extract_bearer(&headers).ok_or_else(|| {
         AppError::new(StatusCode::UNAUTHORIZED, "Bearer token required for API upload")
     })?;
+    let token_prefix: String = token.chars().take(8).collect();
 
     let record = sqlx::query_as::<_, ProjectToken>(
         "select id, project, bucket, token, created_at from project_tokens where token = $1",
     )
     .bind(&token)
-    .fetch_optional(&state.pool)
-    .await?;
+        .fetch_optional(&state.pool)
+        .await?;
 
     let Some(record) = record else {
+        warn!(token_prefix = %token_prefix, "api_upload: invalid token");
         return Err(AppError::new(
             StatusCode::UNAUTHORIZED,
             "Invalid upload token",
         ));
     };
+    info!(token_prefix = %token_prefix, project = %record.project, bucket = %record.bucket, "api_upload: token accepted");
 
     let mut handled = false;
     while let Some(field) = multipart
@@ -577,6 +621,7 @@ async fn api_upload(
 
     state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
+    info!(token_prefix = %token_prefix, project = %record.project, bucket = %record.bucket, "api_upload complete");
     Ok(StatusCode::OK.into_response())
 }
 
@@ -586,10 +631,12 @@ async fn delete_file(
     jar: SignedCookieJar,
 ) -> AppResult<Response> {
     let Some(user) = current_user(&state, &jar).await? else {
+        warn!("delete_file: unauthenticated, redirecting to login");
         let jar = jar.remove(Cookie::from(SESSION_COOKIE));
         return Ok((jar, Redirect::to("/login")).into_response());
     };
     if !is_writer(&user) {
+        warn!(user_id = %user.id, email = %user.email, file_id = %id, "delete_file: forbidden (not writer)");
         return Err(AppError::new(
             StatusCode::FORBIDDEN,
             "Writer permission required",
@@ -612,6 +659,7 @@ async fn delete_file(
 
     state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
+    info!(user_id = %user.id, email = %user.email, file_id = %file.id, "file deleted");
 
     Ok((jar, Redirect::to("/portal")).into_response())
 }
@@ -622,10 +670,12 @@ async fn delete_bucket(
     jar: SignedCookieJar,
 ) -> AppResult<Response> {
     let Some(user) = current_user(&state, &jar).await? else {
+        warn!("delete_bucket: unauthenticated, redirecting to login");
         let jar = jar.remove(Cookie::from(SESSION_COOKIE));
         return Ok((jar, Redirect::to("/login")).into_response());
     };
     if !is_writer(&user) {
+        warn!(user_id = %user.id, email = %user.email, bucket_id = %id, "delete_bucket: forbidden (not writer)");
         return Err(AppError::new(
             StatusCode::FORBIDDEN,
             "Writer permission required",
@@ -669,10 +719,11 @@ async fn delete_bucket(
     sqlx::query("delete from project_tokens where id = $1")
         .bind(record.id)
         .execute(&state.pool)
-        .await?;
+    .await?;
 
     state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
+    info!(user_id = %user.id, email = %user.email, bucket_id = %record.id, project = %record.project, bucket = %record.bucket, "bucket deleted");
 
     Ok((jar, Redirect::to("/portal")).into_response())
 }
@@ -683,10 +734,12 @@ async fn invite_user(
     Form(form): Form<InviteUserForm>,
 ) -> AppResult<Response> {
     let Some(user) = current_user(&state, &jar).await? else {
+        warn!("invite_user: unauthenticated, redirecting to login");
         let jar = jar.remove(Cookie::from(SESSION_COOKIE));
         return Ok((jar, Redirect::to("/login")).into_response());
     };
     if !is_writer(&user) {
+        warn!(user_id = %user.id, email = %user.email, "invite_user: forbidden (not writer)");
         return Err(AppError::new(
             StatusCode::FORBIDDEN,
             "Writer permission required",
@@ -730,12 +783,14 @@ async fn invite_user(
     .bind(id)
     .bind(&email)
     .bind(password_hash)
-    .execute(&state.pool)
-    .await?;
+        .execute(&state.pool)
+        .await?;
 
     let reset_token = issue_reset_token(&state, id).await?;
+    info!(user_id = %user.id, email = %user.email, invited_email = %email, "created user invite");
 
-    let reset_link = format!("/reset/confirm/{}", reset_token);
+    let base = base_url();
+    let reset_link = format!("{}/reset/confirm/{}", base.trim_end_matches('/'), reset_token);
     let body = format!(
         "Welcome to the CDN portal.\n\nTemporary password: {pwd}\nLogin: {login}\nReset link (required on first login): {link}\n\nIf you did not expect this, please contact support@palodurosystems.io.",
         pwd = placeholder,
@@ -763,6 +818,7 @@ async fn download_file(
     jar: SignedCookieJar,
 ) -> AppResult<Response> {
     let Some(_user) = current_user(&state, &jar).await? else {
+        warn!(file_id = %id, "download_file: unauthenticated, redirecting to login");
         let jar = jar.remove(Cookie::from(SESSION_COOKIE));
         return Ok((jar, Redirect::to("/login")).into_response());
     };
@@ -770,6 +826,7 @@ async fn download_file(
     let file = fetch_file_by_id(&state, id).await?;
 
     let Some(file) = file else {
+        warn!(file_id = %id, "download_file: file not found");
         return Err(AppError::new(StatusCode::NOT_FOUND, "File not found"));
     };
 
@@ -788,6 +845,7 @@ async fn download_file(
         .await
         .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "File missing on disk"))?;
     let stream = ReaderStream::new(file_handle);
+    info!(file_id = %file.id, filename = %file.filename, local_path = %file.local_path, "download_file: streaming");
     let response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/octet-stream")
@@ -1133,6 +1191,8 @@ async fn issue_reset_token(state: &AppState, user_id: Uuid) -> AppResult<String>
     .execute(&state.pool)
     .await?;
 
+    let token_preview: String = token.chars().take(8).collect();
+    info!(user_id = %user_id, token_prefix = %token_preview, expires = %expires, "issued reset token");
     Ok(token)
 }
 
@@ -1147,6 +1207,7 @@ async fn send_email(to: &str, subject: &str, body: &str) -> AppResult<()> {
     let from = std::env::var("SMTP_FROM").unwrap_or_else(|_| "support@palodurosystems.io".to_string());
 
     if host.is_empty() {
+        warn!("Email not configured; skipping send");
         return Err(AppError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Email not configured",
@@ -1167,12 +1228,21 @@ async fn send_email(to: &str, subject: &str, body: &str) -> AppResult<()> {
         .credentials(creds)
         .build();
 
+    info!(to = %to, subject = %subject, host = %host, port = port, "sending email");
     mailer
         .send(email)
         .await
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to send email: {}", e)))?;
+        .map_err(|e| {
+            error!(to = %to, error = %e, "failed to send email");
+            AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to send email: {}", e))
+        })?;
+    info!(to = %to, subject = %subject, "email sent");
 
     Ok(())
+}
+
+fn base_url() -> String {
+    std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string())
 }
 
 fn render_template(
@@ -1199,10 +1269,12 @@ async fn create_bucket(
     Form(form): Form<CreateBucketForm>,
 ) -> AppResult<Response> {
     let Some(user) = current_user(&state, &jar).await? else {
+        warn!("create_bucket: unauthenticated, redirecting to login");
         let jar = jar.remove(Cookie::from(SESSION_COOKIE));
         return Ok((jar, Redirect::to("/login")).into_response());
     };
     if !is_writer(&user) {
+        warn!(user_id = %user.id, email = %user.email, "create_bucket: forbidden (not writer)");
         return Err(AppError::new(
             StatusCode::FORBIDDEN,
             "Writer permission required",
@@ -1238,6 +1310,7 @@ async fn create_bucket(
 
     state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
+    info!(user_id = %user.id, email = %user.email, bucket_id = %id, project = %project, bucket = %bucket, token_prefix = %token.chars().take(8).collect::<String>(), "bucket created");
 
     let buckets = fetch_buckets(&state).await?;
     let mut ctx = TeraContext::new();

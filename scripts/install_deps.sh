@@ -48,7 +48,14 @@ mkdir -p "$APP_DIR" "$CACHE_DIR_DEFAULT"
 chown -R "$APP_USER":"$APP_USER" "$APP_DIR" "$CACHE_DIR_DEFAULT"
 
 echo "[3/8] Downloading release binary..."
-BIN_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/pdes-cdn"
+ARCH="$(uname -m)"
+case "$ARCH" in
+  x86_64|amd64) TARGET_TRIPLE="x86_64-unknown-linux-gnu" ;;
+  aarch64|arm64) TARGET_TRIPLE="aarch64-unknown-linux-gnu" ;;
+  *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
+ASSET_NAME="pdes-cdn-${TARGET_TRIPLE}"
+BIN_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${ASSET_NAME}"
 if [[ -n "$GH_DOWNLOAD_TOKEN" ]]; then
   # Try API asset download for private repos
   ASSET_API_URL=$(python3 - <<'PYCODE' || true
@@ -56,8 +63,8 @@ import os, json, sys, urllib.request
 token = os.environ.get("GH_DOWNLOAD_TOKEN")
 repo = os.environ.get("REPO")
 tag = os.environ.get("RELEASE_TAG")
-name = "pdes-cdn"
-if not (token and repo and tag):
+name = os.environ.get("ASSET_NAME")
+if not (token and repo and tag and name):
     sys.exit(1)
 req = urllib.request.Request(
     f"https://api.github.com/repos/{repo}/releases/tags/{tag}",
@@ -92,6 +99,29 @@ else
 fi
 chmod +x "$APP_DIR/pdes-cdn"
 chown "$APP_USER":"$APP_USER" "$APP_DIR/pdes-cdn"
+
+echo "[3b/8] Fetching templates..."
+SRC_TMP="$(mktemp -d)"
+ARCHIVE_URL="https://api.github.com/repos/${REPO}/tarball/${RELEASE_TAG}"
+if [[ -n "$GH_DOWNLOAD_TOKEN" ]]; then
+  curl -fL \
+    -H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}" \
+    -H "Accept: application/vnd.github+json" \
+    "$ARCHIVE_URL" -o "$SRC_TMP/src.tar.gz"
+else
+  curl -fL "$ARCHIVE_URL" -o "$SRC_TMP/src.tar.gz"
+fi
+tar -xzf "$SRC_TMP/src.tar.gz" -C "$SRC_TMP"
+SRC_ROOT=$(find "$SRC_TMP" -maxdepth 1 -mindepth 1 -type d | head -n1)
+if [[ -d "$SRC_ROOT/templates" ]]; then
+  rm -rf "$APP_DIR/templates"
+  cp -r "$SRC_ROOT/templates" "$APP_DIR/"
+  chown -R "$APP_USER":"$APP_USER" "$APP_DIR/templates"
+else
+  echo "Templates directory not found in archive; aborting." >&2
+  exit 1
+fi
+rm -rf "$SRC_TMP"
 
 echo "[4/8] PostgreSQL setup (db/user)..."
 sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" | grep -q 1 || \
