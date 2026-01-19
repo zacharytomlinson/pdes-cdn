@@ -27,19 +27,19 @@ jobs:
         run: |
           sudo dpkg --add-architecture arm64
           # Pin amd64 repos to amd64 only to avoid 404s, add ports.ubuntu.com for arm64
-          sudo tee /etc/apt/sources.list >/dev/null <<'EOF'
-deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble main restricted universe multiverse
-deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
-deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-security main restricted universe multiverse
-deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse
-EOF
+          sudo sh -c "cat > /etc/apt/sources.list <<'EOF'
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-security main restricted universe multiverse
+          deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu noble-backports main restricted universe multiverse
+          EOF"
           # Add ports.ubuntu.com for arm64 packages (azure mirrors do not host arm64)
-          sudo tee /etc/apt/sources.list.d/arm64.list >/dev/null <<'EOF'
+          sudo sh -c "cat > /etc/apt/sources.list.d/arm64.list <<'EOF'
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-backports main restricted universe multiverse
-          EOF
+          EOF"
           sudo apt-get update
           sudo apt-get install -y \
             gcc-aarch64-linux-gnu \
