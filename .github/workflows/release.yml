@@ -85,7 +85,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: pdes-cdn-*
-          merge-multiple: true
+          merge-multiple: false
           path: artifacts
 
       - name: Create GitHub release
@@ -96,3 +96,4 @@ jobs:
             artifacts/pdes-cdn-aarch64-unknown-linux-gnu/pdes-cdn#pdes-cdn-aarch64-unknown-linux-gnu
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
+          token: ${{ secrets.GH_RELEASE_TOKEN || github.token }}
