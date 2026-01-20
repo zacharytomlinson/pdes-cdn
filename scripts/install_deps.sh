@@ -286,3 +286,11 @@ Next steps:
 4) Start the app: systemctl start ${SERVICE_NAME}
 4) Login with zacharytomlinson@palodurosystems.io / CdnPass1234 (must reset on first login).
 Cache dir currently at ${CACHE_DIR_DEFAULT} (map to PCIe disk if desired)."
+
+# Example invocation (run as root):
+# REPO=palodurosystems/pdes-cdn \
+# RELEASE_TAG=v0.0.6 \
+# DOMAIN=cdn.example.com \
+# CERTBOT_EMAIL=admin@example.com \
+# GH_DOWNLOAD_TOKEN=jflksdfjslkdfjdkf \
+# bash scripts/install_deps.sh
