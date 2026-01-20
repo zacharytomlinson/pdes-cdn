@@ -81,20 +81,30 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download artifacts
+      - name: Download x86_64 artifact
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          pattern: pdes-cdn-*
-          merge-multiple: true
+          name: pdes-cdn-x86_64-unknown-linux-gnu
+          path: artifacts/x86_64
 
-      - name: List downloaded artifacts
-        run: ls -R artifacts
+      - name: Download aarch64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pdes-cdn-aarch64-unknown-linux-gnu
+          path: artifacts/aarch64
+
+      - name: Rename for release upload
+        run: |
+          mv artifacts/x86_64/pdes-cdn artifacts/pdes-cdn-x86_64-unknown-linux-gnu
+          mv artifacts/aarch64/pdes-cdn artifacts/pdes-cdn-aarch64-unknown-linux-gnu
+          ls -l artifacts
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/pdes-cdn
+          files: |
+            artifacts/pdes-cdn-x86_64-unknown-linux-gnu
+            artifacts/pdes-cdn-aarch64-unknown-linux-gnu
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           token: ${{ secrets.GH_RELEASE_TOKEN || github.token }}
