@@ -253,7 +253,12 @@ async fn main() -> AppResult<()> {
         cookie_secret_env
     };
 
-    let templates = Tera::new("templates/**/*").context("loading templates")?;
+    let templates = Tera::new("templates/**/*")
+        .context("loading templates")
+        .map_err(|err| {
+            error!(error = %err, error_debug = ?err, "Failed to load templates");
+            AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "loading templates")
+        })?;
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&database_url)

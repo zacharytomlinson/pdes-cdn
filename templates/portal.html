@@ -160,7 +160,7 @@
 
     <div class="stack-lg">
         <div id="summary-panel"
-             hx-get="{{ cache_summary_endpoint | default(value=&quot/cache-summary&quot) }}"
+             hx-get="{{ cache_summary_endpoint | default(value='/cache-summary') }}"
              hx-trigger="load"
              hx-target="#summary-panel"
              hx-swap="outerHTML">
@@ -173,7 +173,7 @@
         </div>
 
         <div id="file-panel"
-             hx-get="{{ files_endpoint | default(value=&quot/files@quot) }}"
+             hx-get="{{ files_endpoint | default(value='/files') }}"
              hx-trigger="load"
              hx-target="#file-panel"
              hx-swap="outerHTML">

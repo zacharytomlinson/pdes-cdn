@@ -9,7 +9,7 @@
                    class="search-input"
                    type="search"
                    name="q"
-                   value="{{ q | default(value=&quot&quot) }}"
+                   value="{{ q | default(value='') }}"
                    placeholder="Search filenames or buckets…"
                    autocomplete="off"
                    hx-get="/files"
