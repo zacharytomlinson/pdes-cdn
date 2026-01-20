@@ -180,10 +180,31 @@ jobs:
           echo "TARGET_TRIPLE=$target" >> "$GITHUB_ENV"
           echo "BIN_PATH=artifacts/pdes-cdn-$target" >> "$GITHUB_ENV"
 
+      - name: Debug sudo + paths
+        run: |
+          set -euo pipefail
+          echo "whoami=$(whoami)"
+          id
+          echo "GITHUB_WORKSPACE=${GITHUB_WORKSPACE}"
+          echo "script_path=${GITHUB_WORKSPACE}/scripts/deploy_node.sh"
+          echo "script_path_resolved=$(readlink -f "${GITHUB_WORKSPACE}/scripts/deploy_node.sh" || true)"
+          ls -l "${GITHUB_WORKSPACE}/scripts/deploy_node.sh" || true
+          command -v bash || true
+          command -v /usr/bin/bash || true
+          sudo -n -l || true
+
       - name: Deploy on node (requires passwordless sudo)
         run: |
           set -euo pipefail
-          script_path="${GITHUB_WORKSPACE}/scripts/deploy_node.sh"
+          script_path="$(readlink -f "${GITHUB_WORKSPACE}/scripts/deploy_node.sh")"
+          if [[ "$(id -u)" -eq 0 ]]; then
+            /usr/bin/bash "$script_path" \
+              --app-dir "${APP_DIR:-/opt/pdes-cdn}" \
+              --service "${SERVICE_NAME:-pdes-cdn}" \
+              --bin "${BIN_PATH}" \
+              --templates "templates"
+            exit 0
+          fi
           sudo -n /usr/bin/bash "$script_path" \
             --app-dir "${APP_DIR:-/opt/pdes-cdn}" \
             --service "${SERVICE_NAME:-pdes-cdn}" \
@@ -276,6 +297,19 @@ jobs:
           echo "BIN_PATH=artifacts/${asset_name}" >> "$GITHUB_ENV"
           echo "TEMPLATES_PATH=$src_root/templates" >> "$GITHUB_ENV"
 
+      - name: Debug sudo + paths
+        run: |
+          set -euo pipefail
+          echo "whoami=$(whoami)"
+          id
+          echo "GITHUB_WORKSPACE=${GITHUB_WORKSPACE}"
+          echo "script_path=${GITHUB_WORKSPACE}/scripts/deploy_node.sh"
+          echo "script_path_resolved=$(readlink -f "${GITHUB_WORKSPACE}/scripts/deploy_node.sh" || true)"
+          ls -l "${GITHUB_WORKSPACE}/scripts/deploy_node.sh" || true
+          command -v bash || true
+          command -v /usr/bin/bash || true
+          sudo -n -l || true
+
       - name: Deploy on node (requires passwordless sudo)
         run: |
           set -euo pipefail
@@ -283,7 +317,16 @@ jobs:
           if [[ "${DRY_RUN}" == "1" ]]; then
             args+=(--dry-run)
           fi
-          script_path="${GITHUB_WORKSPACE}/scripts/deploy_node.sh"
+          script_path="$(readlink -f "${GITHUB_WORKSPACE}/scripts/deploy_node.sh")"
+          if [[ "$(id -u)" -eq 0 ]]; then
+            /usr/bin/bash "$script_path" \
+              --app-dir "${APP_DIR:-/opt/pdes-cdn}" \
+              --service "${SERVICE_NAME:-pdes-cdn}" \
+              --bin "${BIN_PATH}" \
+              --templates "${TEMPLATES_PATH}" \
+              "${args[@]}"
+            exit 0
+          fi
           sudo -n /usr/bin/bash "$script_path" \
             --app-dir "${APP_DIR:-/opt/pdes-cdn}" \
             --service "${SERVICE_NAME:-pdes-cdn}" \

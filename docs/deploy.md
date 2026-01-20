@@ -30,6 +30,7 @@ Use a self-hosted GitHub Actions runner inside the VPN (ideally on the Debian no
 
 - If you see `sudo: a password is required`, your sudoers entry likely doesn’t match the exact command being executed.
 - The workflow runs `/usr/bin/bash` with the script at `$GITHUB_WORKSPACE/scripts/deploy_node.sh` (typically `/actions-runner/_work/pdes-cdn/pdes-cdn/scripts/deploy_node.sh`).
+- On the node, as the runner user, check what sudo thinks is allowed with `sudo -n -l` (it should list the deploy command without prompting).
 
 ## Manual fallback
 
