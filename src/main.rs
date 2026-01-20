@@ -7,7 +7,7 @@ use argon2::{
 };
 use axum::{
     body::Body,
-    extract::{DefaultBodyLimit, FromRef, Multipart, Path, State},
+    extract::{DefaultBodyLimit, FromRef, Multipart, Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -18,7 +18,7 @@ use axum_extra::extract::SignedCookieJar;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use dotenvy::dotenv;
 use lettre::{
-    message::{Mailbox, Message},
+    message::{Mailbox, Message, MultiPart},
     transport::smtp::authentication::Credentials,
     AsyncSmtpTransport, AsyncTransport, Tokio1Executor,
 };
@@ -109,10 +109,51 @@ struct CachedFile {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+struct CachedFileView {
+    id: Uuid,
+    filename: String,
+    bucket: String,
+    size: Option<String>,
+    created_at: String,
+}
+
+impl From<&CachedFile> for CachedFileView {
+    fn from(file: &CachedFile) -> Self {
+        let bucket = std::path::Path::new(&file.local_path)
+            .parent()
+            .and_then(|p| p.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("-")
+            .to_string();
+        let size = file.size_bytes.map(format_bytes);
+        let created_at = file.created_at.format("%Y-%m-%d %H:%M UTC").to_string();
+        Self {
+            id: file.id,
+            filename: file.filename.clone(),
+            bucket,
+            size,
+            created_at,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ListFilesQuery {
+    q: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 struct DirSummary {
     path: String,
     file_count: usize,
     total_bytes: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct DirSummaryView {
+    path: String,
+    file_count: usize,
+    total: String,
 }
 
 #[derive(Debug, Clone, FromRow, serde::Serialize)]
@@ -165,6 +206,21 @@ struct InviteUserForm {
 #[tokio::main]
 async fn main() -> AppResult<()> {
     dotenv().ok();
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(|s| s.as_str()) == Some("--hash-password") {
+        let Some(password) = args.get(2) else {
+            eprintln!("Usage: pdes-cdn --hash-password <password>");
+            std::process::exit(2);
+        };
+        let salt = SaltString::generate(&mut OsRng);
+        let password_hash = Argon2::default()
+            .hash_password(password.as_bytes(), &salt)
+            .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Could not hash password"))?
+            .to_string();
+        println!("{password_hash}");
+        return Ok(());
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -176,12 +232,26 @@ async fn main() -> AppResult<()> {
 
     let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/pdes_cdn".to_string());
     let cache_dir = std::env::var("CACHE_DIR").unwrap_or_else(|_| "cache".to_string());
+    let skip_cache_dir_write_check = std::env::var("CACHE_DIR_SKIP_WRITE_CHECK")
+        .ok()
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
     let max_upload_bytes: usize = std::env::var("MAX_UPLOAD_BYTES")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(200 * 1024 * 1024);
-    let cookie_secret =
-        std::env::var("COOKIE_SECRET").unwrap_or_else(|_| "dev-secret-change-me".to_string());
+    let cookie_secret_env = std::env::var("COOKIE_SECRET").ok().unwrap_or_default();
+    let cookie_secret = if cookie_secret_env.trim().is_empty() {
+        let generated: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(64)
+            .map(char::from)
+            .collect();
+        warn!("COOKIE_SECRET not set; using an ephemeral random secret (sessions will invalidate on restart)");
+        generated
+    } else {
+        cookie_secret_env
+    };
 
     let templates = Tera::new("templates/**/*").context("loading templates")?;
     let pool = PgPoolOptions::new()
@@ -196,6 +266,11 @@ async fn main() -> AppResult<()> {
     let cache_dir = tokio::fs::canonicalize(&cache_dir_path)
         .await
         .unwrap_or(cache_dir_path);
+    if skip_cache_dir_write_check {
+        warn!(cache_dir = %cache_dir.display(), "CACHE_DIR write check disabled; uploads may fail if not writable");
+    } else {
+        ensure_writable_cache_root(&cache_dir).await?;
+    }
 
     let mut hasher = Sha512::new();
     hasher.update(cookie_secret.as_bytes());
@@ -225,6 +300,13 @@ async fn main() -> AppResult<()> {
 
     let app = Router::new()
         .route("/", get(root))
+        .route("/favicon.ico", get(favicon_ico))
+        .route("/favicon-16x16.png", get(favicon_16_png))
+        .route("/favicon-32x32.png", get(favicon_32_png))
+        .route("/apple-touch-icon.png", get(apple_touch_icon_png))
+        .route("/android-chrome-192x192.png", get(android_192_png))
+        .route("/android-chrome-512x512.png", get(android_512_png))
+        .route("/site.webmanifest", get(site_webmanifest))
         .route("/login", get(show_login).post(do_login))
         .route("/logout", get(do_logout))
         .route("/reset", get(show_reset_request).post(do_reset_request))
@@ -254,6 +336,83 @@ async fn main() -> AppResult<()> {
     axum::serve(listener, app).await.map_err(AppError::from)?;
 
     Ok(())
+}
+
+async fn favicon_ico() -> impl IntoResponse {
+    const BYTES: &[u8] = include_bytes!("../assets/favicon.ico");
+    (
+        [
+            (header::CONTENT_TYPE, "image/x-icon"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        BYTES,
+    )
+}
+
+async fn favicon_16_png() -> impl IntoResponse {
+    const BYTES: &[u8] = include_bytes!("../assets/favicon-16x16.png");
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        BYTES,
+    )
+}
+
+async fn favicon_32_png() -> impl IntoResponse {
+    const BYTES: &[u8] = include_bytes!("../assets/favicon-32x32.png");
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        BYTES,
+    )
+}
+
+async fn apple_touch_icon_png() -> impl IntoResponse {
+    const BYTES: &[u8] = include_bytes!("../assets/apple-touch-icon.png");
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        BYTES,
+    )
+}
+
+async fn android_192_png() -> impl IntoResponse {
+    const BYTES: &[u8] = include_bytes!("../assets/android-chrome-192x192.png");
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        BYTES,
+    )
+}
+
+async fn android_512_png() -> impl IntoResponse {
+    const BYTES: &[u8] = include_bytes!("../assets/android-chrome-512x512.png");
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        BYTES,
+    )
+}
+
+async fn site_webmanifest() -> impl IntoResponse {
+    const BYTES: &[u8] = include_bytes!("../assets/site.webmanifest");
+    (
+        [
+            (header::CONTENT_TYPE, "application/manifest+json"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        BYTES,
+    )
 }
 
 async fn root(State(state): State<AppState>, jar: SignedCookieJar) -> AppResult<impl IntoResponse> {
@@ -346,17 +505,21 @@ async fn do_reset_request(
     let base = base_url();
     let reset_link = format!("{}/reset/confirm/{}", base.trim_end_matches('/'), token);
     let subject = "CDN portal password reset";
-    let body = format!(
+    let body_text = format!(
         "We received a password reset request for this address.\n\nReset link (valid 30 minutes): {link}\nIf you did not request this, you can ignore this email.",
         link = reset_link
     );
-    let _ = send_email(&form.email, subject, &body).await?;
+    let body_html = render_email_template(&state, "email/password_reset.html", {
+        let mut ctx = TeraContext::new();
+        ctx.insert("reset_link", &reset_link);
+        ctx
+    })?;
+    let _ = send_email(&form.email, subject, &body_text, Some(body_html)).await?;
     let token_preview: String = token.chars().take(8).collect();
     info!(email = %form.email, token_prefix = %token_preview, "issued reset token and sent reset email");
 
     let mut ctx = TeraContext::new();
     ctx.insert("message", "If the account exists, a reset link was prepared.");
-    ctx.insert("token_preview", &token);
     render_template(&state, "reset_request.html", ctx)
 }
 
@@ -430,25 +593,38 @@ async fn list_files(
     State(state): State<AppState>,
     jar: SignedCookieJar,
     headers: HeaderMap,
+    Query(query): Query<ListFilesQuery>,
 ) -> AppResult<Response> {
     let Some(user) = current_user(&state, &jar).await? else {
         warn!("list_files: unauthenticated, redirecting to login");
         let jar = jar.remove(Cookie::from(SESSION_COOKIE));
         return Ok((jar, Redirect::to("/login")).into_response());
     };
-    info!(user_id = %user.id, email = %user.email, hx = %is_hx_request(&headers), "list_files");
+    let hx = is_hx_request(&headers);
+    info!(user_id = %user.id, email = %user.email, hx = %hx, q = ?query.q, "list_files");
 
     let files = fetch_files(&state).await?;
-    let mut ctx = TeraContext::new();
-    ctx.insert("files", &files);
-    ctx.insert("can_write", &is_writer(&user));
-    if is_writer(&user) {
-        let buckets = fetch_buckets(&state).await?;
-        let bucket_tree = build_bucket_views(&files, &buckets)?;
-        ctx.insert("bucket_tree", &bucket_tree);
-    }
+    let filtered: Vec<CachedFile> = match query.q.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        Some(q) => {
+            let q = q.to_ascii_lowercase();
+            files
+                .into_iter()
+                .filter(|f| {
+                    f.filename.to_ascii_lowercase().contains(&q)
+                        || f.local_path.to_ascii_lowercase().contains(&q)
+                })
+                .collect()
+        }
+        None => files,
+    };
 
-    let html = if is_hx_request(&headers) {
+    let file_views: Vec<CachedFileView> = filtered.iter().map(CachedFileView::from).collect();
+    let mut ctx = TeraContext::new();
+    ctx.insert("files", &file_views);
+    ctx.insert("q", &query.q);
+    ctx.insert("can_write", &is_writer(&user));
+
+    let html = if hx {
         render_template(&state, "partials/file_table.html", ctx)?
     } else {
         let buckets = if is_writer(&user) {
@@ -467,6 +643,23 @@ async fn list_files(
     Ok((jar, html).into_response())
 }
 
+fn format_bytes(bytes: i64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+
+    let b = bytes.max(0) as f64;
+    if b >= GB {
+        format!("{:.2} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.2} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.1} KB", b / KB)
+    } else {
+        format!("{} B", bytes.max(0))
+    }
+}
+
 async fn cache_summary(
     State(state): State<AppState>,
     jar: SignedCookieJar,
@@ -481,8 +674,16 @@ async fn cache_summary(
 
     let files = fetch_files(&state).await?;
     let directories = summarize_directories(&files);
+    let directory_views: Vec<DirSummaryView> = directories
+        .into_iter()
+        .map(|d| DirSummaryView {
+            path: d.path,
+            file_count: d.file_count,
+            total: format_bytes(d.total_bytes),
+        })
+        .collect();
     let mut ctx = TeraContext::new();
-    ctx.insert("directories", &directories);
+    ctx.insert("directories", &directory_views);
     if is_writer(&user) {
         let buckets = fetch_buckets(&state).await?;
         let bucket_tree = build_bucket_views(&files, &buckets)?;
@@ -535,7 +736,13 @@ async fn upload_file(
     {
         match field.name() {
             Some("file") => {
-                save_upload(&state, field, bucket_path.clone(), None).await?;
+                let Some(bucket_path) = bucket_path.clone() else {
+                    return Err(AppError::new(
+                        StatusCode::BAD_REQUEST,
+                        "Select a target bucket before uploading",
+                    ));
+                };
+                save_upload(&state, field, Some(bucket_path), None).await?;
                 handled = true;
                 break;
             }
@@ -548,11 +755,22 @@ async fn upload_file(
                     .next()
                     .map(|s| sanitize_bucket(s))
                 {
-                    bucket_path = if val.is_empty() || val == "root" {
-                        None
-                    } else {
-                        Some(val)
-                    };
+                    if val.is_empty() || val == "root" {
+                        return Err(AppError::new(
+                            StatusCode::BAD_REQUEST,
+                            "Select a valid target bucket",
+                        ));
+                    }
+                    let mut parts = val.split('/');
+                    let project = parts.next().unwrap_or_default();
+                    let bucket = parts.next().unwrap_or_default();
+                    if project.is_empty() || bucket.is_empty() || parts.next().is_some() {
+                        return Err(AppError::new(
+                            StatusCode::BAD_REQUEST,
+                            "Bucket must be in the form project/bucket",
+                        ));
+                    }
+                    bucket_path = Some(format!("{}/{}", project, bucket));
                 }
             }
             _ => {}
@@ -798,7 +1016,7 @@ async fn invite_user(
         link = reset_link
     );
     let subject = "Your CDN portal access";
-    let _ = send_email(&email, subject, &body).await;
+    let _ = send_email(&email, subject, &body, None).await;
 
     let buckets = fetch_buckets(&state).await?;
     let mut ctx = TeraContext::new();
@@ -1051,7 +1269,12 @@ async fn save_upload(
     }
 
     let file_id = Uuid::new_v4();
-    let prefix = bucket_path.unwrap_or_else(|| "root".to_string());
+    let Some(prefix) = bucket_path else {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "Bucket path is required",
+        ));
+    };
     let stored_name = format!("{}-{}", file_id, clean);
     let relative_path = format!("{}/{}", prefix, stored_name);
     let dest_path = state.cache_dir.join(&relative_path);
@@ -1059,12 +1282,22 @@ async fn save_upload(
     if let Some(parent) = dest_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
-            .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Could not create directory"))?;
+            .map_err(|e| {
+                AppError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Could not create directory {}: {}", parent.display(), e),
+                )
+            })?;
     }
 
     let mut dest = File::create(&dest_path)
         .await
-        .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Could not create file"))?;
+        .map_err(|e| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not create file {}: {}", dest_path.display(), e),
+            )
+        })?;
     let mut size: i64 = 0;
 
     while let Some(chunk) = field
@@ -1075,7 +1308,12 @@ async fn save_upload(
         size += chunk.len() as i64;
         dest.write_all(&chunk)
             .await
-            .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed writing upload"))?;
+            .map_err(|e| {
+                AppError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed writing upload to {}: {}", dest_path.display(), e),
+                )
+            })?;
     }
 
     sqlx::query(
@@ -1095,6 +1333,34 @@ async fn save_upload(
             .await;
     }
 
+    Ok(())
+}
+
+async fn ensure_writable_cache_root(cache_dir: &std::path::Path) -> AppResult<()> {
+    let probe_dir = cache_dir.join(".pdes-cdn-write-test");
+    tokio::fs::create_dir_all(&probe_dir).await.map_err(|e| {
+        AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "CACHE_DIR is not writable (cannot create {}): {}",
+                probe_dir.display(),
+                e
+            ),
+        )
+    })?;
+    let probe_file = probe_dir.join("probe");
+    tokio::fs::write(&probe_file, b"probe").await.map_err(|e| {
+        AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!(
+                "CACHE_DIR is not writable (cannot write {}): {}",
+                probe_file.display(),
+                e
+            ),
+        )
+    })?;
+    let _ = tokio::fs::remove_file(&probe_file).await;
+    let _ = tokio::fs::remove_dir(&probe_dir).await;
     Ok(())
 }
 
@@ -1196,7 +1462,33 @@ async fn issue_reset_token(state: &AppState, user_id: Uuid) -> AppResult<String>
     Ok(token)
 }
 
-async fn send_email(to: &str, subject: &str, body: &str) -> AppResult<()> {
+fn render_email_template(state: &AppState, name: &str, mut ctx: TeraContext) -> AppResult<String> {
+    insert_app_template_globals(&mut ctx);
+    state
+        .templates
+        .render(name, &ctx)
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+fn insert_app_template_globals(ctx: &mut TeraContext) {
+    ctx.insert("app_name", "Palo Duro Embedded Systems");
+    ctx.insert("app_version", env!("CARGO_PKG_VERSION"));
+    if let Ok(build) = std::env::var("APP_BUILD") {
+        let build = build.trim().to_string();
+        if !build.is_empty() {
+            ctx.insert("app_build", &build);
+        }
+    }
+    if let Ok(commit) = std::env::var("APP_COMMIT") {
+        let commit = commit.trim().to_string();
+        if !commit.is_empty() {
+            let short = commit.chars().take(8).collect::<String>();
+            ctx.insert("app_commit", &short);
+        }
+    }
+}
+
+async fn send_email(to: &str, subject: &str, body_text: &str, body_html: Option<String>) -> AppResult<()> {
     let host = std::env::var("SMTP_HOST").unwrap_or_default();
     let username = std::env::var("SMTP_USERNAME").unwrap_or_default();
     let password = std::env::var("SMTP_PASSWORD").unwrap_or_default();
@@ -1228,12 +1520,19 @@ async fn send_email(to: &str, subject: &str, body: &str) -> AppResult<()> {
     }
     .to_ascii_lowercase();
 
-    let email = Message::builder()
+    let email_builder = Message::builder()
         .from(from.parse::<Mailbox>().map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Invalid FROM email"))?)
         .to(to.parse::<Mailbox>().map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid recipient email"))?)
-        .subject(subject)
-        .body(body.to_string())
-        .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed to build email"))?;
+        .subject(subject);
+
+    let email = match body_html {
+        Some(html) => email_builder
+            .multipart(MultiPart::alternative_plain_html(body_text.to_string(), html))
+            .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed to build email"))?,
+        None => email_builder
+            .body(body_text.to_string())
+            .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed to build email"))?,
+    };
 
     if (username.is_empty() && !password.is_empty()) || (!username.is_empty() && password.is_empty()) {
         warn!("SMTP_USERNAME/SMTP_PASSWORD partially configured; authentication may fail");
@@ -1283,7 +1582,7 @@ fn render_template(
     name: &str,
     mut ctx: TeraContext,
 ) -> AppResult<Html<String>> {
-    ctx.insert("app_name", "Palo Duro Embedded Systems");
+    insert_app_template_globals(&mut ctx);
     let rendered = state
         .templates
         .render(name, &ctx)

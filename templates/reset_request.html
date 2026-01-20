@@ -7,9 +7,6 @@
     {% if message %}
         <div class="alert success">{{ message }}</div>
     {% endif %}
-    {% if token_preview %}
-        <div class="alert">Dev preview token: <strong>{{ token_preview }}</strong></div>
-    {% endif %}
     <form method="post" action="/reset">
         <div class="stack">
             <label for="email">Email</label>

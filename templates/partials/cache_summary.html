@@ -17,20 +17,20 @@
     {% if directories | length == 0 %}
         <p class="muted">No directories yet. Upload or cache files to populate the node.</p>
     {% else %}
-        <table>
+        <table class="table-fixed">
             <thead>
             <tr>
                 <th>Directory</th>
-                <th>Files</th>
-                <th>Total bytes</th>
+                <th class="num">Files</th>
+                <th class="num">Total</th>
             </tr>
             </thead>
             <tbody>
             {% for dir in directories %}
                 <tr>
-                    <td>{{ dir.path }}</td>
-                    <td>{{ dir.file_count }}</td>
-                    <td>{{ dir.total_bytes }}</td>
+                    <td class="truncate">{{ dir.path }}</td>
+                    <td class="num">{{ dir.file_count }}</td>
+                    <td class="num">{{ dir.total }}</td>
                 </tr>
             {% endfor %}
             </tbody>

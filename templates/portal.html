@@ -16,57 +16,47 @@
     </div>
 {% endblock header_actions %}
 {% block content %}
-<section class="card">
-    <h1>Node cache</h1>
-    <p class="muted">Firmware Provided to you by Palo Duro Embedded Systems</p>
-    <div class="stack">
-        <div id="summary-panel"
-             hx-get="{{ cache_summary_endpoint | default(value="/cache-summary") }}"
-             hx-trigger="load"
-             hx-target="#summary-panel"
-             hx-swap="outerHTML">
-            <div class="inline-actions">
-                <span class="muted">Loading cache summary…</span>
-                <span class="hx-indicator" aria-hidden="true"></span>
-            </div>
-        </div>
-        <div id="file-panel"
-             hx-get="{{ files_endpoint | default(value="/files") }}"
-             hx-trigger="load"
-             hx-target="#file-panel"
-             hx-swap="outerHTML">
-            <div class="inline-actions">
-                <span class="muted">Loading cached files…</span>
-                <span class="hx-indicator" aria-hidden="true"></span>
-            </div>
-        </div>
-    </div>
-</section>
+<div class="page-title">
+    <h1>CDN node</h1>
+    <p class="muted">Upload and manage firmware artifacts by project bucket.</p>
+</div>
+
+<div class="grid-2">
+    <div class="stack-lg">
 
 {% if can_write %}
 <section class="card">
     <h2 style="margin-top: 0;">Upload new artifact</h2>
+    {% set bucket_list = buckets | default(value=[]) %}
     <form method="post" action="/upload" enctype="multipart/form-data">
         <div class="stack">
             <label for="bucket_path">Target bucket</label>
-            <select id="bucket_path" name="bucket_path">
-                <option value="root">root</option>
-                {% for bucket in buckets | default(value=[]) %}
+            <select id="bucket_path" name="bucket_path" required>
+                {% if bucket_list | length == 0 %}
+                    <option value="" selected disabled>No buckets yet — create one below</option>
+                {% else %}
+                    <option value="" selected disabled>Select a bucket…</option>
+                {% endif %}
+                {% for bucket in bucket_list %}
                     <option value="{{ bucket.project }}/{{ bucket.bucket }}">{{ bucket.project }}/{{ bucket.bucket }}</option>
                 {% endfor %}
             </select>
         </div>
+        {% if bucket_list | length == 0 %}
+            <div class="alert">Uploads require a project bucket. Create one below to enable uploads.</div>
+        {% endif %}
         <div class="stack">
             <label for="file">Select file (.bin, .elf, .msi, .deb)</label>
-            <input type="file" id="file" name="file" accept=".bin,.elf,.msi,.deb" required>
+            <input type="file" id="file" name="file" accept=".bin,.elf,.msi,.deb" required {% if bucket_list | length == 0 %}disabled{% endif %}>
         </div>
         <div class="inline-actions">
-            <button type="submit" class="icon-btn" aria-label="Upload">
+            <button type="submit" class="icon-btn" {% if bucket_list | length == 0 %}disabled{% endif %}>
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
                     <polyline points="7 9 12 4 17 9" />
                     <line x1="12" y1="4" x2="12" y2="16" />
                 </svg>
+                Upload
             </button>
         </div>
     </form>
@@ -91,12 +81,13 @@
             <input id="bucket" name="bucket" type="text" required placeholder="release-artifacts">
         </div>
         <div class="inline-actions">
-            <button type="submit" class="icon-btn" aria-label="Create bucket">
+            <button type="submit" class="icon-btn">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="9" />
                     <line x1="12" y1="8" x2="12" y2="16" />
                     <line x1="8" y1="12" x2="16" y2="12" />
                 </svg>
+                Create bucket
             </button>
             <span class="muted">Tokens are per project bucket; rotate periodically.</span>
         </div>
@@ -109,12 +100,13 @@
                 <input id="invite_email" name="email" type="email" required placeholder="user@example.com">
             </div>
             <div class="inline-actions">
-                <button type="submit" class="icon-btn" aria-label="Invite user">
+                <button type="submit" class="icon-btn">
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                         <circle cx="12" cy="12" r="9" />
                         <line x1="12" y1="8" x2="12" y2="16" />
                         <line x1="8" y1="12" x2="16" y2="12" />
                     </svg>
+                    Invite user
                 </button>
             </div>
         </form>
@@ -164,4 +156,34 @@
     <p class="muted">You have reader access. Contact an admin for writer permissions to upload new archives.</p>
 </section>
 {% endif %}
+    </div>
+
+    <div class="stack-lg">
+        <div id="summary-panel"
+             hx-get="{{ cache_summary_endpoint | default(value=&quot/cache-summary&quot) }}"
+             hx-trigger="load"
+             hx-target="#summary-panel"
+             hx-swap="outerHTML">
+            <div class="card">
+                <div class="inline-actions">
+                    <span class="muted">Loading cache summary…</span>
+                    <span class="hx-indicator" aria-hidden="true"></span>
+                </div>
+            </div>
+        </div>
+
+        <div id="file-panel"
+             hx-get="{{ files_endpoint | default(value=&quot/files@quot) }}"
+             hx-trigger="load"
+             hx-target="#file-panel"
+             hx-swap="outerHTML">
+            <div class="card">
+                <div class="inline-actions">
+                    <span class="muted">Loading cached files…</span>
+                    <span class="hx-indicator" aria-hidden="true"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock content %}

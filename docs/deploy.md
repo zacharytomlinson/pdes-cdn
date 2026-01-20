@@ -45,3 +45,20 @@ The app sends password-reset emails via SMTP using `/etc/pdes-cdn.env`:
 - `SMTP_TLS` (`starttls` | `wrapper` | `none`; default is `starttls` unless `SMTP_PORT=465`)
 - `SMTP_USERNAME` / `SMTP_PASSWORD` (optional; only used when both are set)
 - `SMTP_FROM` (required; defaults to `support@palodurosystems.io` in the installer template)
+
+## Storage on a mounted disk
+
+Uploads are stored under `CACHE_DIR` (the DB stores relative paths, so you can move the whole directory tree by changing `CACHE_DIR`).
+
+Recommended setup for an external disk mounted at `/mnt/main_ssd`:
+
+- Create a dedicated directory and grant the service user write access:
+  - `sudo mkdir -p /mnt/main_ssd/pdes-cdn/cache`
+  - `sudo chown -R pdescdn:pdescdn /mnt/main_ssd/pdes-cdn`
+- Set `/etc/pdes-cdn.env`:
+  - `CACHE_DIR=/mnt/main_ssd/pdes-cdn/cache`
+- Ensure systemd waits for the mount before starting the service (pick one):
+  - Add `RequiresMountsFor=/mnt/main_ssd` to the unit, or
+  - Add appropriate `After=`/`Requires=` entries for the mount unit.
+
+If you need the service to start even when the cache dir isn’t writable (read-only mode), set `CACHE_DIR_SKIP_WRITE_CHECK=true` (uploads will still fail).

@@ -4,6 +4,12 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ app_name }} · {% block title %}{% endblock title %}</title>
+    <link rel="icon" href="/favicon.ico">
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <link rel="manifest" href="/site.webmanifest">
+    <meta name="theme-color" content="#0b1222">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600&display=swap" rel="stylesheet">
@@ -81,6 +87,33 @@
             box-shadow: 0 15px 60px rgba(0,0,0,0.35);
         }
         .card h1, .card h2 { margin-top: 0; }
+        .page-title {
+            margin-bottom: 18px;
+        }
+        .page-title h1 { margin: 0 0 6px 0; }
+        .page-title p { margin: 0; }
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 420px minmax(0, 1fr);
+            gap: 18px;
+            align-items: start;
+        }
+        .stack-lg { display: flex; flex-direction: column; gap: 18px; }
+        .toolbar {
+            display: inline-flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .search-input {
+            width: 320px;
+            max-width: 44vw;
+        }
+        .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .truncate { max-width: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .actions { white-space: nowrap; }
+        .actions form { margin: 0; display: inline; }
         form {
             display: flex;
             flex-direction: column;
@@ -164,6 +197,7 @@
             border-collapse: collapse;
             margin-top: 8px;
         }
+        .table-fixed { table-layout: fixed; }
         th, td {
             text-align: left;
             padding: 12px 10px;
@@ -187,6 +221,17 @@
             color: #bae6fd;
             font-size: 12px;
         }
+        footer {
+            margin-top: 18px;
+            padding: 10px 2px 0;
+            border-top: 1px solid rgba(31,41,55,0.6);
+            color: rgba(203,213,225,0.8);
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
         .hx-indicator {
             display: inline-block;
             width: 12px;
@@ -205,6 +250,8 @@
             body { padding: 18px 14px 48px; }
             header { flex-direction: column; align-items: flex-start; gap: 10px; }
             .inline-actions { flex-direction: column; gap: 12px; align-items: flex-start; }
+            .grid-2 { grid-template-columns: 1fr; }
+            .search-input { width: 100%; max-width: 100%; }
             button, input { width: 100%; }
         }
     </style>
@@ -232,6 +279,10 @@
     <main>
         {% block content %}{% endblock content %}
     </main>
+    <footer>
+        <span>v{{ app_version }}{% if app_commit %} ({{ app_commit }}){% endif %}{% if app_build %} · {{ app_build }}{% endif %}</span>
+        <span>{{ app_name }}</span>
+    </footer>
 </div>
 </body>
 </html>

@@ -17,13 +17,18 @@ CHALLENGE_ROOT="/var/www/letsencrypt"
 SERVICE_NAME="pdes-cdn"
 DB_NAME="${DB_NAME:-pdes_cdn}"
 DB_USER="${DB_USER:-pdes_cdn_user}"
-DB_PASS="${DB_PASS:-ChangeMeDbPass123!}"
+DB_PASS="${DB_PASS:-}"
 GH_DOWNLOAD_TOKEN="${GH_DOWNLOAD_TOKEN:-}"
 REPO="${REPO:-OWNER/REPO}"              # e.g., palodurosystems/pdes-cdn
 RELEASE_TAG="${RELEASE_TAG:-}"          # e.g., v0.0.1
 DOMAIN="${DOMAIN:-example.com}"         # set to your domain
 CERTBOT_EMAIL="${CERTBOT_EMAIL:-support@palodurosystems.io}"
 PORT="${PORT:-3000}"
+
+if [[ -z "$DB_PASS" ]]; then
+  # URL- and SQL-safe.
+  DB_PASS="$(openssl rand -hex 24)"
+fi
 
 if [[ -z "$RELEASE_TAG" || "$RELEASE_TAG" == "latest" ]]; then
   echo "Set RELEASE_TAG to the release tag (e.g., v0.0.1)." >&2
@@ -151,10 +156,12 @@ create table if not exists project_tokens (
 SQL
 
 echo "[6/8] Seed initial writer user (zacharytomlinson@palodurosystems.io)..."
-PLACEHOLDER_HASH='$argon2id$v=19$m=19456,t=2,p=1$NTbpT0ilREk2K9+0sGsh8Q$dKzPDjDMBzlrx5GpPv1N4pXLGNpYiR94PR1yG4hIlMY' # password: CdnPass1234
+SEED_WRITER_EMAIL="${SEED_WRITER_EMAIL:-zacharytomlinson@palodurosystems.io}"
+SEED_WRITER_PASSWORD="${SEED_WRITER_PASSWORD:-$(openssl rand -hex 12)}"
+PLACEHOLDER_HASH="$("${APP_DIR}/pdes-cdn" --hash-password "${SEED_WRITER_PASSWORD}")"
 sudo -u postgres psql -d "$DB_NAME" <<SQL
 insert into users (id, email, password_hash, permission, must_reset)
-values ('11111111-1111-1111-1111-111111111112', 'zacharytomlinson@palodurosystems.io', '${PLACEHOLDER_HASH}', 'writer', true)
+values ('11111111-1111-1111-1111-111111111112', '${SEED_WRITER_EMAIL}', '${PLACEHOLDER_HASH}', 'writer', true)
 on conflict (email) do update
     set password_hash = excluded.password_hash,
         permission = 'writer',
@@ -168,6 +175,7 @@ cat >/etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
 Description=PDES CDN Node
 After=network.target postgresql.service
+RequiresMountsFor=/mnt/main_ssd
 
 [Service]
 User=${APP_USER}
@@ -182,10 +190,12 @@ WantedBy=multi-user.target
 EOF
 
 if [[ ! -f /etc/${SERVICE_NAME}.env ]]; then
+  COOKIE_SECRET_DEFAULT="${COOKIE_SECRET:-$(openssl rand -base64 48 | tr -d '\n')}"
   cat >/etc/${SERVICE_NAME}.env <<EOF
 DATABASE_URL=postgres://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}
 CACHE_DIR=${CACHE_DIR_DEFAULT}
-COOKIE_SECRET=please-change-me
+COOKIE_SECRET=${COOKIE_SECRET_DEFAULT}
+BASE_URL=https://${DOMAIN}
 SMTP_HOST=
 SMTP_PORT=587
 SMTP_TLS=starttls
@@ -269,7 +279,7 @@ Next steps:
 2) If certbot failed (see output), fix DNS and rerun: certbot --nginx -d ${DOMAIN} -m ${CERTBOT_EMAIL} --agree-tos --non-interactive
 3) (Optional) Enable service after validating env: systemctl enable ${SERVICE_NAME}
 4) Start the app: systemctl start ${SERVICE_NAME}
-4) Login with zacharytomlinson@palodurosystems.io / CdnPass1234 (must reset on first login).
+4) Login with ${SEED_WRITER_EMAIL} / ${SEED_WRITER_PASSWORD} (must reset on first login).
 Cache dir currently at ${CACHE_DIR_DEFAULT} (map to PCIe disk if desired)."
 
 # Example invocation (run as root):

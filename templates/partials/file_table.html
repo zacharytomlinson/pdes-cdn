@@ -1,51 +1,67 @@
 <div id="file-panel" class="card">
     <div class="inline-actions">
-        <h2 style="margin: 0;">Cached files</h2>
-        <button class="secondary icon-btn"
-                hx-get="/files"
-                hx-target="#file-panel"
-                hx-swap="outerHTML"
-                aria-label="Refresh files">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="23 4 23 10 17 10" />
-                <polyline points="1 20 1 14 7 14" />
-                <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10" />
-                <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14" />
-            </svg>
-        </button>
+        <div>
+            <h2 style="margin: 0;">Files</h2>
+            <div class="muted" style="margin-top: 4px;">Showing {{ files | length }} result(s)</div>
+        </div>
+        <div class="toolbar">
+            <input id="file-search"
+                   class="search-input"
+                   type="search"
+                   name="q"
+                   value="{{ q | default(value=&quot&quot) }}"
+                   placeholder="Search filenames or buckets…"
+                   autocomplete="off"
+                   hx-get="/files"
+                   hx-trigger="keyup changed delay:300ms, search"
+                   hx-target="#file-panel"
+                   hx-swap="outerHTML"
+                   aria-label="Search files">
+            <button class="secondary icon-btn"
+                    hx-get="/files"
+                    hx-include="#file-search"
+                    hx-target="#file-panel"
+                    hx-swap="outerHTML"
+                    aria-label="Refresh files">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 4 23 10 17 10" />
+                    <polyline points="1 20 1 14 7 14" />
+                    <path d="M3.51 9a9 9 0 0 1 14.13-3.36L23 10" />
+                    <path d="M20.49 15a9 9 0 0 1-14.13 3.36L1 14" />
+                </svg>
+            </button>
+        </div>
     </div>
     {% if files | length == 0 %}
         <p class="muted">No cached files yet.</p>
     {% else %}
-        <table>
+        <table class="table-fixed">
             <thead>
             <tr>
-                <th>Name</th>
-                <th>Size</th>
-                <th>Cached at</th>
-                <th></th>
-                {% if can_write %}
-                    <th></th>
-                {% endif %}
+                <th>File</th>
+                <th>Bucket</th>
+                <th class="num">Size</th>
+                <th class="num">Cached</th>
+                <th class="actions">Actions</th>
             </tr>
             </thead>
             <tbody>
             {% for file in files %}
                 <tr>
-                    <td>{{ file.filename }}</td>
-                    <td>{% if file.size_bytes %}{{ file.size_bytes }} bytes{% else %}—{% endif %}</td>
-                    <td>{{ file.created_at }}</td>
-                    <td>
-                        <a class="pill-action icon-link" href="/download/{{ file.id }}" aria-label="Download">
+                    <td class="truncate">{{ file.filename }}</td>
+                    <td class="truncate"><code>{{ file.bucket }}</code></td>
+                    <td class="num">{% if file.size %}{{ file.size }}{% else %}—{% endif %}</td>
+                    <td class="num">{{ file.created_at }}</td>
+                    <td class="actions">
+                        <a class="pill-action icon-link" href="/download/{{ file.id }}">
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                                 <polyline points="7 10 12 15 17 10" />
                                 <line x1="12" y1="15" x2="12" y2="3" />
                             </svg>
+                            Download
                         </a>
-                    </td>
-                    {% if can_write %}
-                        <td>
+                        {% if can_write %}
                             <form method="post" action="/files/{{ file.id }}/delete" onsubmit="return confirm('Delete this file?');">
                                 <button class="secondary icon-btn" type="submit" aria-label="Delete file">
                                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -55,10 +71,11 @@
                                         <path d="M14 11v6" />
                                         <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
                                     </svg>
+                                    Delete
                                 </button>
                             </form>
-                        </td>
-                    {% endif %}
+                        {% endif %}
+                    </td>
                 </tr>
             {% endfor %}
             </tbody>
