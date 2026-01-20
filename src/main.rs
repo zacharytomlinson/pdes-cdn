@@ -1205,6 +1205,7 @@ async fn send_email(to: &str, subject: &str, body: &str) -> AppResult<()> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(587);
     let from = std::env::var("SMTP_FROM").unwrap_or_else(|_| "support@palodurosystems.io".to_string());
+    let tls_mode_raw = std::env::var("SMTP_TLS").ok().unwrap_or_default();
 
     if host.is_empty() {
         warn!("Email not configured; skipping send");
@@ -1214,6 +1215,19 @@ async fn send_email(to: &str, subject: &str, body: &str) -> AppResult<()> {
         ));
     }
 
+    // lettre::AsyncSmtpTransport::relay uses implicit TLS ("SMTPS", typically port 465).
+    // Port 587 is usually STARTTLS, so use starttls_relay by default (or auto-switch based on port).
+    let tls_mode = if tls_mode_raw.is_empty() {
+        if port == 465 {
+            "wrapper"
+        } else {
+            "starttls"
+        }
+    } else {
+        tls_mode_raw.trim()
+    }
+    .to_ascii_lowercase();
+
     let email = Message::builder()
         .from(from.parse::<Mailbox>().map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Invalid FROM email"))?)
         .to(to.parse::<Mailbox>().map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid recipient email"))?)
@@ -1221,14 +1235,33 @@ async fn send_email(to: &str, subject: &str, body: &str) -> AppResult<()> {
         .body(body.to_string())
         .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed to build email"))?;
 
-    let creds = Credentials::new(username, password);
-    let mailer = AsyncSmtpTransport::<Tokio1Executor>::relay(&host)
-        .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed to create mailer"))?
-        .port(port)
-        .credentials(creds)
-        .build();
+    if (username.is_empty() && !password.is_empty()) || (!username.is_empty() && password.is_empty()) {
+        warn!("SMTP_USERNAME/SMTP_PASSWORD partially configured; authentication may fail");
+    }
 
-    info!(to = %to, subject = %subject, host = %host, port = port, "sending email");
+    let mailer_builder = match tls_mode.as_str() {
+        "starttls" => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&host),
+        "wrapper" | "tls" | "smtps" => AsyncSmtpTransport::<Tokio1Executor>::relay(&host),
+        "none" | "plain" | "plaintext" => Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)),
+        _ => {
+            return Err(AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Invalid SMTP_TLS (use starttls|wrapper|none)",
+            ))
+        }
+    }
+    .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed to create mailer"))?
+    .port(port);
+
+    let mailer_builder = if username.is_empty() || password.is_empty() {
+        mailer_builder
+    } else {
+        mailer_builder.credentials(Credentials::new(username, password))
+    };
+
+    let mailer = mailer_builder.build();
+
+    info!(to = %to, subject = %subject, host = %host, port = port, tls = %tls_mode, "sending email");
     mailer
         .send(email)
         .await

@@ -35,3 +35,13 @@ Use a self-hosted GitHub Actions runner inside the VPN (ideally on the Debian no
 ## Manual fallback
 
 - The manual updater `scripts/update_app.sh` remains available for cases where CI can’t reach the node.
+
+## Email (SMTP) configuration
+
+The app sends password-reset emails via SMTP using `/etc/pdes-cdn.env`:
+
+- `SMTP_HOST` (required)
+- `SMTP_PORT` (common: `587` for STARTTLS, `465` for SMTPS)
+- `SMTP_TLS` (`starttls` | `wrapper` | `none`; default is `starttls` unless `SMTP_PORT=465`)
+- `SMTP_USERNAME` / `SMTP_PASSWORD` (optional; only used when both are set)
+- `SMTP_FROM` (required; defaults to `support@palodurosystems.io` in the installer template)
