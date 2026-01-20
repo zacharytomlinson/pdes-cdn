@@ -37,7 +37,7 @@ fi
 echo "[1/8] Installing system dependencies..."
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
-  curl ca-certificates gnupg lsb-release \
+  curl ca-certificates gnupg lsb-release jq \
   postgresql postgresql-contrib libpq-dev \
   pkg-config openssl ssl-cert \
   nginx certbot python3-certbot-nginx
@@ -57,33 +57,17 @@ esac
 ASSET_NAME="pdes-cdn-${TARGET_TRIPLE}"
 BIN_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${ASSET_NAME}"
 if [[ -n "$GH_DOWNLOAD_TOKEN" ]]; then
-  # Try API asset download for private repos
-  ASSET_API_URL=$(python3 - <<'PYCODE' || true
-import os, json, sys, urllib.request
-token = os.environ.get("GH_DOWNLOAD_TOKEN")
-repo = os.environ.get("REPO")
-tag = os.environ.get("RELEASE_TAG")
-name = os.environ.get("ASSET_NAME")
-if not (token and repo and tag and name):
-    sys.exit(1)
-req = urllib.request.Request(
-    f"https://api.github.com/repos/{repo}/releases/tags/{tag}",
-    headers={
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "pdes-installer"
-    },
-)
-with urllib.request.urlopen(req) as resp:
-    data = json.load(resp)
-assets = data.get("assets", [])
-for a in assets:
-    if a.get("name") == name:
-        print(a.get("url", ""))
-        sys.exit(0)
-sys.exit(1)
-PYCODE
-)
+  # Use the asset API URL for private repos (avoids relying on github.com session cookies).
+  ASSET_API_URL="$(
+    curl -fsSL \
+      -H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}" \
+      -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      -H "User-Agent: pdes-installer" \
+      "https://api.github.com/repos/${REPO}/releases/tags/${RELEASE_TAG}" \
+    | jq -r --arg name "$ASSET_NAME" '.assets[]? | select(.name==$name) | .url' \
+    | head -n1
+  )" || true
   if [[ -n "$ASSET_API_URL" ]]; then
     curl -fL \
       -H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}" \

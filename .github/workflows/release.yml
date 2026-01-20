@@ -4,9 +4,33 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to deploy (e.g., v0.1.2) or 'latest'"
+        required: true
+        default: "latest"
+      dry_run:
+        description: "Download + stage only (no install/restart)"
+        type: boolean
+        required: false
+        default: false
+      app_dir:
+        description: "Override APP_DIR (optional)"
+        required: false
+        default: ""
+      service_name:
+        description: "Override systemd service name (optional)"
+        required: false
+        default: ""
+      repo:
+        description: "Override owner/repo (optional)"
+        required: false
+        default: ""
 
 jobs:
   build:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -76,6 +100,7 @@ jobs:
           path: target/${{ matrix.target }}/release/pdes-cdn
 
   release:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     needs: build
     permissions:
@@ -108,3 +133,158 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           token: ${{ secrets.GH_RELEASE_TOKEN || github.token }}
+
+  deploy:
+    name: Deploy (self-hosted)
+    if: github.event_name == 'push'
+    runs-on: [self-hosted, pdes-cdn-prod]
+    needs: release
+    concurrency:
+      group: pdes-cdn-deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      APP_DIR: ${{ vars.APP_DIR }}
+      SERVICE_NAME: ${{ vars.SERVICE_NAME }}
+    steps:
+      - name: Checkout (for templates)
+        uses: actions/checkout@v4
+
+      - name: Download x86_64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pdes-cdn-x86_64-unknown-linux-gnu
+          path: artifacts/x86_64
+
+      - name: Download aarch64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pdes-cdn-aarch64-unknown-linux-gnu
+          path: artifacts/aarch64
+
+      - name: Rename for deploy
+        run: |
+          mv artifacts/x86_64/pdes-cdn artifacts/pdes-cdn-x86_64-unknown-linux-gnu
+          mv artifacts/aarch64/pdes-cdn artifacts/pdes-cdn-aarch64-unknown-linux-gnu
+          ls -l artifacts
+
+      - name: Pick binary for this node
+        run: |
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64|amd64) target="x86_64-unknown-linux-gnu" ;;
+            aarch64|arm64) target="aarch64-unknown-linux-gnu" ;;
+            *) echo "Unsupported arch: $arch" >&2; exit 1 ;;
+          esac
+          echo "TARGET_TRIPLE=$target" >> "$GITHUB_ENV"
+          echo "BIN_PATH=artifacts/pdes-cdn-$target" >> "$GITHUB_ENV"
+
+      - name: Deploy on node (requires passwordless sudo)
+        run: |
+          set -euo pipefail
+          sudo -n bash scripts/deploy_node.sh \
+            --app-dir "${APP_DIR:-/opt/pdes-cdn}" \
+            --service "${SERVICE_NAME:-pdes-cdn}" \
+            --bin "${BIN_PATH}" \
+            --templates "templates"
+
+  deploy_manual:
+    name: Deploy Tag (manual)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, pdes-cdn-prod]
+    concurrency:
+      group: pdes-cdn-deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      REPO: ${{ inputs.repo || github.repository }}
+      GH_DOWNLOAD_TOKEN: ${{ secrets.GH_DOWNLOAD_TOKEN || github.token }}
+      APP_DIR: ${{ inputs.app_dir || vars.APP_DIR }}
+      SERVICE_NAME: ${{ inputs.service_name || vars.SERVICE_NAME }}
+      RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+      DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+    steps:
+      - name: Checkout (for deploy script)
+        uses: actions/checkout@v4
+
+      - name: Resolve tag + download assets/templates
+        run: |
+          set -euo pipefail
+
+          need() { command -v "$1" >/dev/null 2>&1 || { echo "missing command: $1" >&2; exit 1; }; }
+          need curl
+          need jq
+          need tar
+
+          tag="$RELEASE_TAG_INPUT"
+          if [[ "$tag" == "latest" || -z "$tag" ]]; then
+            tag="$(
+              curl -fsSL \
+                -H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                -H "User-Agent: pdes-cdn-deployer" \
+                "https://api.github.com/repos/${REPO}/releases/latest" \
+              | jq -r '.tag_name'
+            )"
+          fi
+          [[ -n "$tag" && "$tag" != "null" ]] || { echo "failed to resolve release tag" >&2; exit 1; }
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64|amd64) target="x86_64-unknown-linux-gnu" ;;
+            aarch64|arm64) target="aarch64-unknown-linux-gnu" ;;
+            *) echo "Unsupported arch: $arch" >&2; exit 1 ;;
+          esac
+          asset_name="pdes-cdn-${target}"
+          echo "TARGET_TRIPLE=$target" >> "$GITHUB_ENV"
+
+          mkdir -p dl artifacts
+
+          asset_api_url="$(
+            curl -fsSL \
+              -H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "User-Agent: pdes-cdn-deployer" \
+              "https://api.github.com/repos/${REPO}/releases/tags/${tag}" \
+            | jq -r --arg name "$asset_name" '.assets[]? | select(.name==$name) | .url' \
+            | head -n1
+          )"
+          [[ -n "$asset_api_url" && "$asset_api_url" != "null" ]] || { echo "asset not found: $asset_name" >&2; exit 1; }
+
+          echo "Downloading binary: $asset_name"
+          curl -fL \
+            -H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}" \
+            -H "Accept: application/octet-stream" \
+            "$asset_api_url" -o "artifacts/${asset_name}"
+          chmod +x "artifacts/${asset_name}"
+
+          echo "Downloading templates tarball for ${tag}"
+          curl -fL \
+            -H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/tarball/${tag}" -o "dl/src.tar.gz"
+          tar -xzf "dl/src.tar.gz" -C dl
+          src_root="$(find dl -maxdepth 1 -mindepth 1 -type d | head -n1)"
+          [[ -d "$src_root/templates" ]] || { echo "templates not found in tarball" >&2; exit 1; }
+
+          echo "BIN_PATH=artifacts/${asset_name}" >> "$GITHUB_ENV"
+          echo "TEMPLATES_PATH=$src_root/templates" >> "$GITHUB_ENV"
+
+      - name: Deploy on node (requires passwordless sudo)
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "${DRY_RUN}" == "1" ]]; then
+            args+=(--dry-run)
+          fi
+          sudo -n bash scripts/deploy_node.sh \
+            --app-dir "${APP_DIR:-/opt/pdes-cdn}" \
+            --service "${SERVICE_NAME:-pdes-cdn}" \
+            --bin "${BIN_PATH}" \
+            --templates "${TEMPLATES_PATH}" \
+            "${args[@]}"

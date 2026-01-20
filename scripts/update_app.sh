@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
 # Update the deployed pdes-cdn binary + templates for the current architecture.
+#
+# Usage (run as root):
+#   REPO=org/repo RELEASE_TAG=v0.0.6 bash scripts/update_app.sh
+#
+# Inputs:
+#   - APP_DIR (default: /opt/pdes-cdn)
+#   - SERVICE_NAME (default: pdes-cdn)
+#   - REPO (default: zacharytomlinson/pdes-cdn)
+#   - RELEASE_TAG (default: latest; resolves automatically for public repos)
+#   - GH_DOWNLOAD_TOKEN or GITHUB_TOKEN (optional; required for private repos)
+#   - ASSET_URL_OVERRIDE (optional; direct URL or GitHub asset API URL)
+#   - DRY_RUN=1 (optional; downloads + stages but doesn't install/restart)
 
 set -euo pipefail
 
@@ -8,12 +20,25 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
-APP_DIR="/opt/pdes-cdn"
-SERVICE_NAME="pdes-cdn"
+die() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+APP_DIR="${APP_DIR:-/opt/pdes-cdn}"
+SERVICE_NAME="${SERVICE_NAME:-pdes-cdn}"
 REPO="${REPO:-zacharytomlinson/pdes-cdn}"
 RELEASE_TAG="${RELEASE_TAG:-}"
-GH_DOWNLOAD_TOKEN="${GH_DOWNLOAD_TOKEN:-}"
+GH_DOWNLOAD_TOKEN="${GH_DOWNLOAD_TOKEN:-${GITHUB_TOKEN:-}}"
 ASSET_URL_OVERRIDE="${ASSET_URL_OVERRIDE:-}"
+DRY_RUN="${DRY_RUN:-0}"
+if [[ "$DRY_RUN" != "0" && "$DRY_RUN" != "1" ]]; then
+  die "DRY_RUN must be 0 or 1 (got: ${DRY_RUN})"
+fi
 
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -22,17 +47,84 @@ case "$ARCH" in
   *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 ASSET_NAME="pdes-cdn-${TARGET_TRIPLE}"
-BIN_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${ASSET_NAME}"
-TARBALL_URL="https://api.github.com/repos/${REPO}/tarball/${RELEASE_TAG}"
-echo "Resolved variables:"
-echo "  REPO=${REPO}"
-echo "  RELEASE_TAG=${RELEASE_TAG}"
-echo "  TARGET_TRIPLE=${TARGET_TRIPLE}"
-echo "  ASSET_NAME=${ASSET_NAME}"
-echo "  BIN_URL=${BIN_URL}"
-echo "  ASSET_URL_OVERRIDE=${ASSET_URL_OVERRIDE}"
+
+need_cmd curl
+need_cmd tar
+need_cmd systemctl
+need_cmd find
+need_cmd stat
+need_cmd mktemp
+
+BIN_URL=""
+TARBALL_URL=""
+
+github_api_base_headers=(
+  -H "Accept: application/vnd.github+json"
+  -H "X-GitHub-Api-Version: 2022-11-28"
+  -H "User-Agent: pdes-cdn-updater"
+)
+github_api_auth_headers=()
+if [[ -n "$GH_DOWNLOAD_TOKEN" ]]; then
+  github_api_auth_headers=(-H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}")
+fi
+
+resolve_release_tag() {
+  if [[ -n "$RELEASE_TAG" && "$RELEASE_TAG" != "latest" ]]; then
+    return 0
+  fi
+
+  if [[ -z "$GH_DOWNLOAD_TOKEN" ]]; then
+    # Public repo path: follow the redirect and infer the tag from the final URL.
+    local effective_url tag
+    effective_url="$(
+      curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest"
+    )" || die "Failed to resolve latest release tag for ${REPO} (repo may be private; set GH_DOWNLOAD_TOKEN)"
+    tag="${effective_url##*/}"
+    [[ -n "$tag" && "$tag" != "latest" ]] || die "Failed to parse release tag from ${effective_url}"
+    RELEASE_TAG="$tag"
+    return 0
+  fi
+
+  # Private repo path: use the API and parse JSON with jq.
+  need_cmd jq
+  local release_json
+  release_json="$(
+    curl -fsSL \
+      "${github_api_base_headers[@]}" \
+      "${github_api_auth_headers[@]}" \
+      "https://api.github.com/repos/${REPO}/releases/latest"
+  )" || die "Failed to fetch release metadata for ${REPO}"
+  RELEASE_TAG="$(jq -r '.tag_name // empty' <<<"$release_json")"
+  [[ -n "$RELEASE_TAG" ]] || die "Failed to resolve latest release tag via API for ${REPO}"
+}
+
+download_url() {
+  local url="$1"
+  local out="$2"
+  local mode="${3:-}"
+
+  local headers=()
+  if [[ -n "$GH_DOWNLOAD_TOKEN" ]]; then
+    headers+=(-H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}")
+  fi
+
+  if [[ "$mode" == "asset_api" ]]; then
+    # Asset API URL; must request octet-stream.
+    headers+=(-H "Accept: application/octet-stream")
+  fi
+
+  curl -fL "${headers[@]}" -o "$out" "$url"
+}
+
+resolve_urls() {
+  BIN_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${ASSET_NAME}"
+  TARBALL_URL="https://api.github.com/repos/${REPO}/tarball/${RELEASE_TAG}"
+}
 
 # Detect owner from existing app dir if possible.
+if [[ ! -d "$APP_DIR" ]]; then
+  die "APP_DIR does not exist: ${APP_DIR}"
+fi
 APP_USER="$(stat -c '%U' "$APP_DIR" 2>/dev/null || echo pdescdn)"
 APP_GROUP="$(stat -c '%G' "$APP_DIR" 2>/dev/null || echo "$APP_USER")"
 
@@ -40,104 +132,82 @@ TMPDIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMPDIR"; }
 trap cleanup EXIT
 
+resolve_release_tag
+resolve_urls
+
+echo "Resolved variables:"
+echo "  REPO=${REPO}"
+echo "  RELEASE_TAG=${RELEASE_TAG}"
+echo "  TARGET_TRIPLE=${TARGET_TRIPLE}"
+echo "  ASSET_NAME=${ASSET_NAME}"
+echo "  APP_DIR=${APP_DIR}"
+echo "  SERVICE_NAME=${SERVICE_NAME}"
+echo "  DRY_RUN=${DRY_RUN}"
+echo "  ASSET_URL_OVERRIDE=${ASSET_URL_OVERRIDE}"
+
+echo "Resolved URLs:"
+echo "  BIN_URL=${BIN_URL}"
+echo "  TARBALL_URL=${TARBALL_URL}"
+
 echo "[1/3] Downloading binary (${ASSET_NAME})..."
-# Export so Python can read env vars.
-export REPO RELEASE_TAG GH_DOWNLOAD_TOKEN ASSET_NAME
-
-echo "API lookup will query: https://api.github.com/repos/${REPO}/releases/${RELEASE_TAG:+tags/}${RELEASE_TAG:-latest}"
-ASSET_API_URL=$(python3 - <<'PYCODE' || true
-import os, json, sys, urllib.request
-token = os.environ.get("GH_DOWNLOAD_TOKEN")
-repo = os.environ.get("REPO")
-tag = os.environ.get("RELEASE_TAG")
-name = os.environ.get("ASSET_NAME")
-use_latest = not bool(tag)
-headers = {
-    "Accept": "application/vnd.github+json",
-    "User-Agent": "pdes-updater",
-}
-if token:
-    headers["Authorization"] = f"Bearer {token}"
-if use_latest:
-    url = f"https://api.github.com/repos/{repo}/releases/latest"
-else:
-    url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
-req = urllib.request.Request(
-    url,
-    headers=headers,
-)
-try:
-    with urllib.request.urlopen(req) as resp:
-        status = resp.status
-        data = json.load(resp)
-    tag_resolved = data.get("tag_name")
-    for a in data.get("assets", []):
-        if a.get("name") == name:
-            print(a.get("url", ""))
-            print(tag_resolved or "")
-            sys.exit(0)
-    print(f"NO_ASSET|{status}|{url}", file=sys.stderr)
-    sys.exit(1)
-except Exception as e:
-    print(f"ERROR|{url}|{e}", file=sys.stderr)
-    sys.exit(1)
-PYCODE
-)
-TAG_RESOLVED=$(printf '%s' "$ASSET_API_URL" | tail -n1)
-ASSET_API_URL=$(printf '%s' "$ASSET_API_URL" | head -n1)
-if [[ -z "$RELEASE_TAG" && -n "$TAG_RESOLVED" ]]; then
-  RELEASE_TAG="$TAG_RESOLVED"
-  echo "Resolved RELEASE_TAG via API: ${RELEASE_TAG}"
-fi
-DOWNLOAD_URL="$ASSET_API_URL"
-EXTRA_HEADERS=()
-EXTRA_HEADERS+=(-H "Accept: application/octet-stream")
-if [[ -n "$GH_DOWNLOAD_TOKEN" ]]; then
-  EXTRA_HEADERS+=(-H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}")
-fi
-
+ASSET_DOWNLOAD_URL=""
 if [[ -n "$ASSET_URL_OVERRIDE" ]]; then
   echo "Using ASSET_URL_OVERRIDE=${ASSET_URL_OVERRIDE}"
-  DOWNLOAD_URL="$ASSET_URL_OVERRIDE"
-elif [[ -z "$ASSET_API_URL" ]]; then
-  echo "Asset ${ASSET_NAME} not found via API on release ${RELEASE_TAG}." >&2
-  exit 1
+  ASSET_DOWNLOAD_URL="$ASSET_URL_OVERRIDE"
+elif [[ -n "$GH_DOWNLOAD_TOKEN" ]]; then
+  need_cmd jq
+  RELEASE_JSON="$TMPDIR/release.json"
+  curl -fsSL \
+    "${github_api_base_headers[@]}" \
+    "${github_api_auth_headers[@]}" \
+    -o "$RELEASE_JSON" \
+    "https://api.github.com/repos/${REPO}/releases/tags/${RELEASE_TAG}" \
+    || die "Failed to fetch release metadata for ${REPO} ${RELEASE_TAG}"
+  ASSET_DOWNLOAD_URL="$(jq -r --arg name "$ASSET_NAME" '.assets[]? | select(.name==$name) | .url' "$RELEASE_JSON" | head -n1)"
+  [[ -n "$ASSET_DOWNLOAD_URL" && "$ASSET_DOWNLOAD_URL" != "null" ]] || die "Asset ${ASSET_NAME} not found in release ${RELEASE_TAG}"
 else
-  echo "Resolved asset via API: ${ASSET_API_URL}"
+  ASSET_DOWNLOAD_URL="$BIN_URL"
 fi
 
-echo "Downloading from: ${DOWNLOAD_URL}"
-curl -fL "${EXTRA_HEADERS[@]}" -o "$TMPDIR/pdes-cdn" "$DOWNLOAD_URL"
+echo "Downloading from: ${ASSET_DOWNLOAD_URL}"
+if [[ "$ASSET_DOWNLOAD_URL" == https://api.github.com/* ]]; then
+  download_url "$ASSET_DOWNLOAD_URL" "$TMPDIR/pdes-cdn" "asset_api"
+else
+  download_url "$ASSET_DOWNLOAD_URL" "$TMPDIR/pdes-cdn"
+fi
 chmod +x "$TMPDIR/pdes-cdn"
 
 echo "[2/3] Refreshing templates..."
-if [[ -n "$GH_DOWNLOAD_TOKEN" ]]; then
-  curl -fL \
-    -H "Authorization: Bearer ${GH_DOWNLOAD_TOKEN}" \
-    -H "Accept: application/vnd.github+json" \
-    -o "$TMPDIR/src.tar.gz" \
-    "$TARBALL_URL"
-else
-  curl -fL -o "$TMPDIR/src.tar.gz" "$TARBALL_URL"
-fi
+download_url "$TARBALL_URL" "$TMPDIR/src.tar.gz"
 tar -xzf "$TMPDIR/src.tar.gz" -C "$TMPDIR"
 SRC_ROOT=$(find "$TMPDIR" -maxdepth 1 -mindepth 1 -type d | head -n1)
 if [[ -d "$SRC_ROOT/templates" ]]; then
-  rm -rf "${APP_DIR}/templates"
-  cp -r "$SRC_ROOT/templates" "$APP_DIR/"
-  chown -R "$APP_USER":"$APP_GROUP" "${APP_DIR}/templates"
+  rm -rf "${APP_DIR}/templates.new"
+  cp -r "$SRC_ROOT/templates" "${APP_DIR}/templates.new"
+  chown -R "$APP_USER":"$APP_GROUP" "${APP_DIR}/templates.new"
 else
   echo "Templates directory not found in tarball; aborting." >&2
   exit 1
 fi
 
 echo "[3/3] Installing binary and restarting service..."
-cp "$TMPDIR/pdes-cdn" "${APP_DIR}/pdes-cdn"
-chown "$APP_USER":"$APP_GROUP" "${APP_DIR}/pdes-cdn"
-chmod +x "${APP_DIR}/pdes-cdn"
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "DRY_RUN=1: skipping install + restart. Staged files:"
+  echo "  ${TMPDIR}/pdes-cdn"
+  echo "  ${APP_DIR}/templates.new"
+  exit 0
+fi
+
+cp "$TMPDIR/pdes-cdn" "${APP_DIR}/pdes-cdn.new"
+chown "$APP_USER":"$APP_GROUP" "${APP_DIR}/pdes-cdn.new"
+chmod +x "${APP_DIR}/pdes-cdn.new"
+mv -f "${APP_DIR}/pdes-cdn.new" "${APP_DIR}/pdes-cdn"
+
+rm -rf "${APP_DIR}/templates"
+mv -f "${APP_DIR}/templates.new" "${APP_DIR}/templates"
 
 systemctl restart "${SERVICE_NAME}"
-systemctl status "${SERVICE_NAME}" --no-pager
+systemctl status "${SERVICE_NAME}" --no-pager --full
 
 echo "Update complete for ${RELEASE_TAG} (${TARGET_TRIPLE})."
 
