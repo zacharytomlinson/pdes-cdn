@@ -81,7 +81,7 @@
             <input id="bucket" name="bucket" type="text" required placeholder="release-artifacts">
         </div>
         <div class="inline-actions">
-            <button type="submit" class="icon-btn">
+            <button type="submit" class="icon-btn btn-compact">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="9" />
                     <line x1="12" y1="8" x2="12" y2="16" />
@@ -115,7 +115,14 @@
         {% if buckets | length == 0 %}
             <p class="muted">No buckets yet. Create one to generate an upload token.</p>
         {% else %}
-            <table>
+            <div class="table-scroll">
+            <table class="table-fixed">
+                <colgroup>
+                    <col style="width: 28%;">
+                    <col style="width: 46%;">
+                    <col style="width: 18%;">
+                    <col style="width: 8%;">
+                </colgroup>
                 <thead>
                 <tr>
                     <th>Bucket</th>
@@ -127,10 +134,10 @@
                 <tbody>
                 {% for bucket in buckets %}
                     <tr>
-                        <td>{{ bucket.project }}/{{ bucket.bucket }}</td>
-                        <td><code>{{ bucket.token }}</code></td>
+                        <td class="truncate">{{ bucket.project }}/{{ bucket.bucket }}</td>
+                        <td class="token"><code>{{ bucket.token }}</code></td>
                         <td>{{ bucket.created_at }}</td>
-                        <td>
+                        <td class="actions">
                             <form method="post" action="/buckets/{{ bucket.id }}/delete" onsubmit="return confirm('Delete this bucket and its files?');">
                                 <button class="secondary icon-btn" type="submit" aria-label="Delete bucket">
                                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -147,6 +154,7 @@
                 {% endfor %}
                 </tbody>
             </table>
+            </div>
         {% endif %}
     </div>
 </section>

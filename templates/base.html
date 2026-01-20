@@ -112,8 +112,19 @@
         }
         .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
         .truncate { max-width: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .actions { white-space: nowrap; }
-        .actions form { margin: 0; display: inline; }
+        .actions { white-space: normal; }
+        .actions form { margin: 0; display: inline-block; }
+        .action-group {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .actions .pill-action { padding: 7px 10px; }
+        .actions button { padding: 10px 12px; width: auto; }
+        .actions .pill-action { width: auto; }
+        .table-scroll { max-width: 100%; overflow-x: auto; }
+        .token code { display: inline-block; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
         form {
             display: flex;
             flex-direction: column;
@@ -170,6 +181,7 @@
             border: 1px solid var(--border);
             box-shadow: none;
         }
+        button.btn-compact { padding: 10px 14px; font-size: 15px; }
         .icon-btn, .icon-link {
             display: inline-flex;
             align-items: center;
