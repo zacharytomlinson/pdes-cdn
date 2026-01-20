@@ -81,17 +81,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download artifacts (x86_64)
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: pdes-cdn-x86_64-unknown-linux-gnu
           path: artifacts
-
-      - name: Download artifacts (aarch64)
-        uses: actions/download-artifact@v4
-        with:
-          name: pdes-cdn-aarch64-unknown-linux-gnu
-          path: artifacts
+          pattern: pdes-cdn-*
+          merge-multiple: true
 
       - name: List downloaded artifacts
         run: ls -R artifacts
@@ -99,9 +94,7 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            artifacts/pdes-cdn-x86_64-unknown-linux-gnu/pdes-cdn
-            artifacts/pdes-cdn-aarch64-unknown-linux-gnu/pdes-cdn
+          files: artifacts/**/pdes-cdn
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
           token: ${{ secrets.GH_RELEASE_TOKEN || github.token }}
