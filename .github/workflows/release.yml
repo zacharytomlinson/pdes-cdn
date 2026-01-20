@@ -183,7 +183,8 @@ jobs:
       - name: Deploy on node (requires passwordless sudo)
         run: |
           set -euo pipefail
-          sudo -n bash scripts/deploy_node.sh \
+          script_path="${GITHUB_WORKSPACE}/scripts/deploy_node.sh"
+          sudo -n /usr/bin/bash "$script_path" \
             --app-dir "${APP_DIR:-/opt/pdes-cdn}" \
             --service "${SERVICE_NAME:-pdes-cdn}" \
             --bin "${BIN_PATH}" \
@@ -282,7 +283,8 @@ jobs:
           if [[ "${DRY_RUN}" == "1" ]]; then
             args+=(--dry-run)
           fi
-          sudo -n bash scripts/deploy_node.sh \
+          script_path="${GITHUB_WORKSPACE}/scripts/deploy_node.sh"
+          sudo -n /usr/bin/bash "$script_path" \
             --app-dir "${APP_DIR:-/opt/pdes-cdn}" \
             --service "${SERVICE_NAME:-pdes-cdn}" \
             --bin "${BIN_PATH}" \

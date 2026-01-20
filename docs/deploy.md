@@ -26,6 +26,11 @@ Use a self-hosted GitHub Actions runner inside the VPN (ideally on the Debian no
 - Set `release_tag` to an existing tag (or `latest`).
 - This runs the `Deploy Tag (manual)` job which downloads the release asset + templates for that tag and deploys them via `scripts/deploy_node.sh`.
 
+## Troubleshooting sudo
+
+- If you see `sudo: a password is required`, your sudoers entry likely doesn’t match the exact command being executed.
+- The workflow runs `/usr/bin/bash` with the script at `$GITHUB_WORKSPACE/scripts/deploy_node.sh` (typically `/actions-runner/_work/pdes-cdn/pdes-cdn/scripts/deploy_node.sh`).
+
 ## Manual fallback
 
 - The manual updater `scripts/update_app.sh` remains available for cases where CI can’t reach the node.
