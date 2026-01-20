@@ -10,7 +10,7 @@ fi
 
 APP_DIR="/opt/pdes-cdn"
 SERVICE_NAME="pdes-cdn"
-REPO="${REPO:-palodurosystems/pdes-cdn}"
+REPO="${REPO:-zacharytomlinson/pdes-cdn}"
 RELEASE_TAG="${RELEASE_TAG:-}"
 GH_DOWNLOAD_TOKEN="${GH_DOWNLOAD_TOKEN:-}"
 ASSET_URL_OVERRIDE="${ASSET_URL_OVERRIDE:-}"
@@ -41,6 +41,9 @@ cleanup() { rm -rf "$TMPDIR"; }
 trap cleanup EXIT
 
 echo "[1/3] Downloading binary (${ASSET_NAME})..."
+# Export so Python can read env vars.
+export REPO RELEASE_TAG GH_DOWNLOAD_TOKEN ASSET_NAME
+
 echo "API lookup will query: https://api.github.com/repos/${REPO}/releases/${RELEASE_TAG:+tags/}${RELEASE_TAG:-latest}"
 ASSET_API_URL=$(python3 - <<'PYCODE' || true
 import os, json, sys, urllib.request
