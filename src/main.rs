@@ -57,6 +57,13 @@ impl FromRef<AppState> for Key {
 struct AppError {
     status: StatusCode,
     message: String,
+    format: AppErrorFormat,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum AppErrorFormat {
+    Html,
+    Plain,
 }
 
 impl AppError {
@@ -64,6 +71,15 @@ impl AppError {
         Self {
             status,
             message: message.into(),
+            format: AppErrorFormat::Html,
+        }
+    }
+
+    fn new_plain(status: StatusCode, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            format: AppErrorFormat::Plain,
         }
     }
 }
@@ -76,13 +92,108 @@ where
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: err.into().to_string(),
+            format: AppErrorFormat::Html,
         }
     }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        (self.status, self.message).into_response()
+        match self.format {
+            AppErrorFormat::Plain => (self.status, self.message).into_response(),
+            AppErrorFormat::Html => {
+                let status_code = self.status.as_u16();
+                let status_text = self
+                    .status
+                    .canonical_reason()
+                    .unwrap_or("Error")
+                    .to_string();
+                let message = escape_html(&self.message);
+                let html = format!(
+                    r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{status_code} {status_text}</title>
+    <style>
+      :root {{
+        --panel: #111827;
+        --border: #1f2937;
+        --soft: #cbd5e1;
+        --accent: #0ea5e9;
+      }}
+      * {{ box-sizing: border-box; }}
+      body {{
+        margin: 0;
+        font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+        background: radial-gradient(circle at 20% 20%, rgba(14,165,233,0.12), transparent 30%),
+                    radial-gradient(circle at 80% 0%, rgba(6,182,212,0.12), transparent 25%),
+                    #0b1222;
+        color: #e2e8f0;
+        min-height: 100vh;
+        padding: 28px 16px 48px;
+      }}
+      a {{ color: var(--accent); text-decoration: none; }}
+      .wrap {{ max-width: 880px; margin: 0 auto; }}
+      .card {{
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 22px;
+        box-shadow: 0 15px 60px rgba(0,0,0,0.35);
+      }}
+      .muted {{ color: var(--soft); }}
+      .actions {{ display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }}
+      .btn {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: #e2e8f0;
+        cursor: pointer;
+      }}
+      .btn.primary {{
+        border: none;
+        background: linear-gradient(120deg, #0ea5e9, #06b6d4);
+        color: #0b1222;
+        font-weight: 700;
+      }}
+      code {{
+        display: inline-block;
+        max-width: 100%;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        background: rgba(2,6,23,0.35);
+        border: 1px solid rgba(31,41,55,0.8);
+        padding: 6px 8px;
+        border-radius: 10px;
+      }}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1 style="margin:0 0 6px 0;">{status_code} {status_text}</h1>
+        <p class="muted" style="margin:0 0 14px 0;">Something went wrong.</p>
+        <div><code>{message}</code></div>
+        <div class="actions">
+          <button class="btn primary" type="button" onclick="history.back()">Go back</button>
+          <a class="btn" href="/portal">Portal</a>
+          <a class="btn" href="/login">Login</a>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>"#
+                );
+                (self.status, Html(html)).into_response()
+            }
+        }
     }
 }
 
@@ -532,26 +643,56 @@ async fn do_reset_request(
 async fn show_reset_confirm(
     Path(token): Path<String>,
     State(state): State<AppState>,
-) -> AppResult<impl IntoResponse> {
-    ensure_valid_token(&state, &token).await?;
-    let mut ctx = TeraContext::new();
-    ctx.insert("token", &token);
-    render_template(&state, "reset_confirm.html", ctx)
+) -> AppResult<Response> {
+    match ensure_valid_token(&state, &token).await {
+        Ok(_) => {
+            let mut ctx = TeraContext::new();
+            ctx.insert("token", &token);
+            let html = render_template(&state, "reset_confirm.html", ctx)?;
+            Ok(html.into_response())
+        }
+        Err(err) => {
+            let message = match err.message.as_str() {
+                "Reset token has expired" => "That reset link has expired. Request a new one.",
+                other => other,
+            };
+            let mut ctx = TeraContext::new();
+            ctx.insert("error", message);
+            ctx.insert("toast_error", message);
+            let html = render_template(&state, "reset_request.html", ctx)?;
+            Ok(html.into_response())
+        }
+    }
 }
 
 async fn do_reset_confirm(
     Path(token): Path<String>,
     State(state): State<AppState>,
     Form(form): Form<ResetConfirmForm>,
-) -> AppResult<impl IntoResponse> {
+) -> AppResult<Response> {
     if form.password != form.confirm_password {
-        return Err(AppError::new(
-            StatusCode::BAD_REQUEST,
-            "Passwords do not match",
-        ));
+        let mut ctx = TeraContext::new();
+        ctx.insert("token", &token);
+        ctx.insert("error", "Passwords do not match");
+        ctx.insert("toast_error", "Passwords do not match");
+        let html = render_template(&state, "reset_confirm.html", ctx)?;
+        return Ok(html.into_response());
     }
 
-    let user = ensure_valid_token(&state, &token).await?;
+    let user = match ensure_valid_token(&state, &token).await {
+        Ok(user) => user,
+        Err(err) => {
+            let message = match err.message.as_str() {
+                "Reset token has expired" => "That reset link has expired. Request a new one.",
+                other => other,
+            };
+            let mut ctx = TeraContext::new();
+            ctx.insert("error", message);
+            ctx.insert("toast_error", message);
+            let html = render_template(&state, "reset_request.html", ctx)?;
+            return Ok(html.into_response());
+        }
+    };
     let salt = SaltString::generate(&mut OsRng);
     let password_hash = Argon2::default()
         .hash_password(form.password.as_bytes(), &salt)
@@ -567,7 +708,7 @@ async fn do_reset_confirm(
     .await?;
 
     info!(user_id = %user.id, email = %user.email, "password reset confirmed");
-    Ok(Redirect::to("/login"))
+    Ok(Redirect::to("/login").into_response())
 }
 
 async fn portal(State(state): State<AppState>, jar: SignedCookieJar) -> AppResult<Response> {
@@ -592,6 +733,35 @@ async fn portal(State(state): State<AppState>, jar: SignedCookieJar) -> AppResul
     ctx.insert("can_write", &is_writer(&user));
     ctx.insert("buckets", &buckets);
     let html = render_template(&state, "portal.html", ctx)?;
+    Ok(html.into_response())
+}
+
+async fn render_portal_with_toast(
+    state: &AppState,
+    user: &User,
+    toast_error: Option<&str>,
+    toast_success: Option<&str>,
+) -> AppResult<Response> {
+    let buckets = if is_writer(user) {
+        fetch_buckets(state).await?
+    } else {
+        Vec::new()
+    };
+
+    let mut ctx = TeraContext::new();
+    ctx.insert("user_email", &user.email);
+    ctx.insert("files_endpoint", "/files");
+    ctx.insert("cache_summary_endpoint", "/cache-summary");
+    ctx.insert("can_write", &is_writer(user));
+    ctx.insert("buckets", &buckets);
+    if let Some(message) = toast_error {
+        ctx.insert("toast_error", message);
+    }
+    if let Some(message) = toast_success {
+        ctx.insert("toast_success", message);
+    }
+
+    let html = render_template(state, "portal.html", ctx)?;
     Ok(html.into_response())
 }
 
@@ -756,10 +926,8 @@ async fn upload_file(
     };
     if !is_writer(&user) {
         warn!(user_id = %user.id, email = %user.email, "upload_file: forbidden (not writer)");
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "Writer permission required",
-        ));
+        return render_portal_with_toast(&state, &user, Some("Writer permission required"), None)
+            .await;
     }
 
     let mut bucket_path: Option<String> = None;
@@ -772,12 +940,17 @@ async fn upload_file(
         match field.name() {
             Some("file") => {
                 let Some(bucket_path) = bucket_path.clone() else {
-                    return Err(AppError::new(
-                        StatusCode::BAD_REQUEST,
-                        "Select a target bucket before uploading",
-                    ));
+                    return render_portal_with_toast(
+                        &state,
+                        &user,
+                        Some("Select a target bucket before uploading"),
+                        None,
+                    )
+                    .await;
                 };
-                save_upload(&state, field, Some(bucket_path), None).await?;
+                if let Err(err) = save_upload(&state, field, Some(bucket_path), None).await {
+                    return render_portal_with_toast(&state, &user, Some(&err.message), None).await;
+                }
                 handled = true;
                 break;
             }
@@ -791,19 +964,25 @@ async fn upload_file(
                     .map(|s| sanitize_bucket(s))
                 {
                     if val.is_empty() || val == "root" {
-                        return Err(AppError::new(
-                            StatusCode::BAD_REQUEST,
-                            "Select a valid target bucket",
-                        ));
+                        return render_portal_with_toast(
+                            &state,
+                            &user,
+                            Some("Select a valid target bucket"),
+                            None,
+                        )
+                        .await;
                     }
                     let mut parts = val.split('/');
                     let project = parts.next().unwrap_or_default();
                     let bucket = parts.next().unwrap_or_default();
                     if project.is_empty() || bucket.is_empty() || parts.next().is_some() {
-                        return Err(AppError::new(
-                            StatusCode::BAD_REQUEST,
-                            "Bucket must be in the form project/bucket",
-                        ));
+                        return render_portal_with_toast(
+                            &state,
+                            &user,
+                            Some("Bucket must be in the form project/bucket"),
+                            None,
+                        )
+                        .await;
                     }
                     bucket_path = Some(format!("{}/{}", project, bucket));
                 }
@@ -813,10 +992,7 @@ async fn upload_file(
     }
 
     if !handled {
-        return Err(AppError::new(
-            StatusCode::BAD_REQUEST,
-            "No file provided",
-        ));
+        return render_portal_with_toast(&state, &user, Some("No file provided"), None).await;
     }
 
     state.file_list_cache.invalidate_all();
@@ -831,7 +1007,7 @@ async fn api_upload(
     mut multipart: Multipart,
 ) -> AppResult<Response> {
     let token = extract_bearer(&headers).ok_or_else(|| {
-        AppError::new(StatusCode::UNAUTHORIZED, "Bearer token required for API upload")
+        AppError::new_plain(StatusCode::UNAUTHORIZED, "Bearer token required for API upload")
     })?;
     let token_prefix: String = token.chars().take(8).collect();
 
@@ -844,7 +1020,7 @@ async fn api_upload(
 
     let Some(record) = record else {
         warn!(token_prefix = %token_prefix, "api_upload: invalid token");
-        return Err(AppError::new(
+        return Err(AppError::new_plain(
             StatusCode::UNAUTHORIZED,
             "Invalid upload token",
         ));
@@ -855,7 +1031,7 @@ async fn api_upload(
     while let Some(field) = multipart
         .next_field()
         .await
-        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid upload payload"))?
+        .map_err(|_| AppError::new_plain(StatusCode::BAD_REQUEST, "Invalid upload payload"))?
     {
         if field.name() == Some("file") {
             let bucket_path = format!("{}/{}", sanitize_bucket(&record.project), sanitize_bucket(&record.bucket));
@@ -866,7 +1042,7 @@ async fn api_upload(
     }
 
     if !handled {
-        return Err(AppError::new(
+        return Err(AppError::new_plain(
             StatusCode::BAD_REQUEST,
             "No file provided",
         ));
@@ -890,15 +1066,13 @@ async fn delete_file(
     };
     if !is_writer(&user) {
         warn!(user_id = %user.id, email = %user.email, file_id = %id, "delete_file: forbidden (not writer)");
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "Writer permission required",
-        ));
+        return render_portal_with_toast(&state, &user, Some("Writer permission required"), None)
+            .await;
     }
 
     let file = fetch_file_by_id(&state, id).await?;
     let Some(file) = file else {
-        return Err(AppError::new(StatusCode::NOT_FOUND, "File not found"));
+        return render_portal_with_toast(&state, &user, Some("File not found"), None).await;
     };
 
     if let Some(path) = resolve_cache_path(&state, &file.local_path).await? {
@@ -929,10 +1103,8 @@ async fn delete_bucket(
     };
     if !is_writer(&user) {
         warn!(user_id = %user.id, email = %user.email, bucket_id = %id, "delete_bucket: forbidden (not writer)");
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "Writer permission required",
-        ));
+        return render_portal_with_toast(&state, &user, Some("Writer permission required"), None)
+            .await;
     }
 
     let record = sqlx::query_as::<_, ProjectToken>(
@@ -943,7 +1115,7 @@ async fn delete_bucket(
     .await?;
 
     let Some(record) = record else {
-        return Err(AppError::new(StatusCode::NOT_FOUND, "Bucket not found"));
+        return render_portal_with_toast(&state, &user, Some("Bucket not found"), None).await;
     };
 
     let prefix = format!("{}/{}", sanitize_bucket(&record.project), sanitize_bucket(&record.bucket));
@@ -993,18 +1165,13 @@ async fn invite_user(
     };
     if !is_writer(&user) {
         warn!(user_id = %user.id, email = %user.email, "invite_user: forbidden (not writer)");
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "Writer permission required",
-        ));
+        return render_portal_with_toast(&state, &user, Some("Writer permission required"), None)
+            .await;
     }
 
     let email = form.email.trim().to_lowercase();
     if email.is_empty() {
-        return Err(AppError::new(
-            StatusCode::BAD_REQUEST,
-            "Email is required",
-        ));
+        return render_portal_with_toast(&state, &user, Some("Email is required"), None).await;
     }
 
     let existing = sqlx::query_scalar::<_, Uuid>("select id from users where email = $1")
@@ -1012,10 +1179,7 @@ async fn invite_user(
         .fetch_optional(&state.pool)
         .await?;
     if existing.is_some() {
-        return Err(AppError::new(
-            StatusCode::BAD_REQUEST,
-            "User already exists",
-        ));
+        return render_portal_with_toast(&state, &user, Some("User already exists"), None).await;
     }
 
     let placeholder: String = rand::thread_rng()
@@ -1050,8 +1214,15 @@ async fn invite_user(
         login = email,
         link = reset_link
     );
+    let body_html = render_email_template(&state, "email/invite.html", {
+        let mut ctx = TeraContext::new();
+        ctx.insert("login_email", &email);
+        ctx.insert("temporary_password", &placeholder);
+        ctx.insert("reset_link", &reset_link);
+        ctx
+    })?;
     let subject = "Your CDN portal access";
-    let _ = send_email(&email, subject, &body, None).await;
+    let _ = send_email(&email, subject, &body, Some(body_html)).await;
 
     let buckets = fetch_buckets(&state).await?;
     let mut ctx = TeraContext::new();
@@ -1061,6 +1232,7 @@ async fn invite_user(
     ctx.insert("can_write", &true);
     ctx.insert("buckets", &buckets);
     ctx.insert("new_invite_email", &email);
+    ctx.insert("toast_success", &format!("Invited {}.", email));
     let html = render_template(&state, "portal.html", ctx)?;
     Ok((jar, html).into_response())
 }
@@ -1523,6 +1695,57 @@ fn insert_app_template_globals(ctx: &mut TeraContext) {
     }
 }
 
+fn escape_html(input: &str) -> String {
+    let mut out = String::with_capacity(input.len().saturating_add(16));
+    for ch in input.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn render_plain_email_html(subject: &str, body_text: &str) -> String {
+    let subject = escape_html(subject);
+    let body = escape_html(body_text).replace('\n', "<br>");
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{subject}</title>
+  </head>
+  <body style="margin:0;padding:0;background-color:#0b1222;color:#e2e8f0;font-family:Segoe UI, Arial, sans-serif;">
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="background-color:#0b1222;padding:28px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" cellpadding="0" cellspacing="0" width="600" style="max-width:600px;width:100%;border-collapse:separate;border-spacing:0;">
+            <tr>
+              <td style="background-color:#111827;border:1px solid #1f2937;border-radius:16px;padding:22px 22px 18px 22px;">
+                <h1 style="margin:0 0 10px 0;font-size:20px;line-height:1.25;color:#e2e8f0;">{subject}</h1>
+                <p style="margin:0;font-size:14px;line-height:1.65;color:#cbd5e1;">{body}</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:14px 6px 0 6px;font-size:12px;line-height:1.6;color:#64748b;">
+                Palo Duro Embedded Systems
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>"#
+    )
+}
+
 async fn send_email(to: &str, subject: &str, body_text: &str, body_html: Option<String>) -> AppResult<()> {
     let host = std::env::var("SMTP_HOST").unwrap_or_default();
     let username = std::env::var("SMTP_USERNAME").unwrap_or_default();
@@ -1560,14 +1783,13 @@ async fn send_email(to: &str, subject: &str, body_text: &str, body_html: Option<
         .to(to.parse::<Mailbox>().map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid recipient email"))?)
         .subject(subject);
 
-    let email = match body_html {
-        Some(html) => email_builder
-            .multipart(MultiPart::alternative_plain_html(body_text.to_string(), html))
-            .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed to build email"))?,
-        None => email_builder
-            .body(body_text.to_string())
-            .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed to build email"))?,
-    };
+    let html = body_html.unwrap_or_else(|| render_plain_email_html(subject, body_text));
+    let email = email_builder
+        .multipart(MultiPart::alternative_plain_html(
+            body_text.to_string(),
+            html,
+        ))
+        .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed to build email"))?;
 
     if (username.is_empty() && !password.is_empty()) || (!username.is_empty() && password.is_empty()) {
         warn!("SMTP_USERNAME/SMTP_PASSWORD partially configured; authentication may fail");
@@ -1642,19 +1864,15 @@ async fn create_bucket(
     };
     if !is_writer(&user) {
         warn!(user_id = %user.id, email = %user.email, "create_bucket: forbidden (not writer)");
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "Writer permission required",
-        ));
+        return render_portal_with_toast(&state, &user, Some("Writer permission required"), None)
+            .await;
     }
 
     let project = sanitize_bucket(&form.project);
     let bucket = sanitize_bucket(&form.bucket);
     if project.is_empty() || bucket.is_empty() {
-        return Err(AppError::new(
-            StatusCode::BAD_REQUEST,
-            "Project and bucket are required",
-        ));
+        return render_portal_with_toast(&state, &user, Some("Project and bucket are required"), None)
+            .await;
     }
 
     let token: String = rand::thread_rng()
@@ -1664,7 +1882,7 @@ async fn create_bucket(
         .collect();
     let id = Uuid::new_v4();
 
-    sqlx::query(
+    if let Err(err) = sqlx::query(
         "insert into project_tokens (id, project, bucket, token) values ($1, $2, $3, $4)",
     )
     .bind(id)
@@ -1673,7 +1891,10 @@ async fn create_bucket(
     .bind(&token)
     .execute(&state.pool)
     .await
-    .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, format!("Could not create bucket: {}", e)))?;
+    .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, format!("Could not create bucket: {}", e)))
+    {
+        return render_portal_with_toast(&state, &user, Some(&err.message), None).await;
+    }
 
     state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
@@ -1688,6 +1909,7 @@ async fn create_bucket(
     ctx.insert("buckets", &buckets);
     ctx.insert("new_token", &token);
     ctx.insert("new_bucket_path", &format!("{}/{}", project, bucket));
+    ctx.insert("toast_success", &format!("Created {}/{}.", project, bucket));
 
     let html = render_template(&state, "portal.html", ctx)?;
     Ok((jar, html).into_response())

@@ -3,6 +3,9 @@
 {% block content %}
 <section class="card">
     <h1>Choose a new password</h1>
+    {% if error %}
+        <div class="alert">{{ error }}</div>
+    {% endif %}
     <form method="post" action="/reset/confirm/{{ token }}">
         <div class="stack">
             <label for="password">New password</label>

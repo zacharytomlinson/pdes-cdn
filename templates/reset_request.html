@@ -4,6 +4,9 @@
 <section class="card">
     <h1>Password reset</h1>
     <p class="muted">Send a reset link to the email on file.</p>
+    {% if error %}
+        <div class="alert">{{ error }}</div>
+    {% endif %}
     {% if message %}
         <div class="alert success">{{ message }}</div>
     {% endif %}
