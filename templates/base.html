@@ -26,22 +26,29 @@
             --success: #22c55e;
         }
         * { box-sizing: border-box; }
-        body {
-            margin: 0;
-            font-family: "Space Grotesk", "Segoe UI", sans-serif;
-            background: radial-gradient(circle at 20% 20%, rgba(14,165,233,0.12), transparent 30%),
-                        radial-gradient(circle at 80% 0%, rgba(6,182,212,0.12), transparent 25%),
-                        #0b1222;
-            color: #e2e8f0;
-            min-height: 100vh;
-            padding: 32px 20px 64px;
-        }
+	        body {
+	            margin: 0;
+	            font-family: "Space Grotesk", "Segoe UI", sans-serif;
+	            background: radial-gradient(circle at 20% 20%, rgba(14,165,233,0.12), transparent 30%),
+	                        radial-gradient(circle at 80% 0%, rgba(6,182,212,0.12), transparent 25%),
+	                        #0b1222;
+	            color: #e2e8f0;
+	            min-height: 100vh;
+	            display: flex;
+	            flex-direction: column;
+	            padding: 32px 20px 64px;
+	        }
         a { color: var(--accent); text-decoration: none; }
         a:hover { color: var(--accent-strong); }
-        .page {
-            max-width: 1280px;
-            margin: 0 auto;
-        }
+	        .page {
+	            max-width: 1280px;
+	            margin: 0 auto;
+	            width: 100%;
+	            flex: 1;
+	            display: flex;
+	            flex-direction: column;
+	        }
+	        main { flex: 1; }
         header {
             display: flex;
             align-items: center;
@@ -239,60 +246,102 @@
             color: #bae6fd;
             font-size: 12px;
         }
-        .app-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-            gap: 18px;
-            align-items: stretch;
-        }
-        .app-card {
-            padding: 18px;
-            display: flex;
-            flex-direction: column;
-            gap: 14px;
-        }
-        .app-brand {
-            display: flex;
-            align-items: flex-start;
-            gap: 14px;
-        }
-        .app-icon {
-            width: 54px;
-            height: 54px;
-            border-radius: 16px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-            font-size: 20px;
-            background: rgba(14,165,233,0.14);
-            border: 1px solid rgba(14,165,233,0.35);
-            color: #bae6fd;
-            flex: 0 0 auto;
-            overflow: hidden;
-        }
-        .app-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
-        .app-summary { min-width: 0; flex: 1; }
-        .app-title-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-        }
-        .app-title {
-            margin: 0;
-            font-size: 18px;
-            line-height: 1.2;
-            min-width: 0;
-        }
-        .app-desc { margin: 8px 0 0; }
-        .app-actions {
-            display: flex;
-            justify-content: flex-end;
-            gap: 10px;
-            flex-wrap: wrap;
-            margin-top: auto;
-        }
+	        .app-grid {
+	            display: grid;
+	            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+	            gap: 18px;
+	            align-items: stretch;
+	        }
+	        .app-card {
+	            padding: 16px;
+	            display: flex;
+	            flex-direction: column;
+	            gap: 14px;
+	        }
+	        .app-icon {
+	            width: 100%;
+	            aspect-ratio: 1 / 1;
+	            border-radius: 22px;
+	            display: flex;
+	            align-items: center;
+	            justify-content: center;
+	            font-weight: 700;
+	            font-size: 56px;
+	            background: rgba(14,165,233,0.10);
+	            border: 1px solid rgba(14,165,233,0.30);
+	            color: #bae6fd;
+	            overflow: hidden;
+	            position: relative;
+	        }
+	        .app-icon-fallback {
+	            position: absolute;
+	            inset: 0;
+	            display: flex;
+	            align-items: center;
+	            justify-content: center;
+	            user-select: none;
+	        }
+	        .app-icon img {
+	            width: 100%;
+	            height: 100%;
+	            object-fit: contain;
+	            padding: 18px;
+	            display: block;
+	            position: relative;
+	            z-index: 1;
+	        }
+	        .app-banner {
+	            display: flex;
+	            align-items: center;
+	            justify-content: space-between;
+	            gap: 10px;
+	            padding: 10px 12px;
+	            border-radius: 14px;
+	            border: 1px solid rgba(31,41,55,0.75);
+	            background: rgba(2,6,23,0.35);
+	        }
+	        .app-title {
+	            margin: 0;
+	            font-size: 18px;
+	            line-height: 1.2;
+	            min-width: 0;
+	        }
+	        .app-details {
+	            border-top: 1px dashed rgba(31,41,55,0.85);
+	            padding-top: 10px;
+	        }
+	        .app-details-toggle {
+	            cursor: pointer;
+	            list-style: none;
+	            display: flex;
+	            align-items: center;
+	            justify-content: space-between;
+	            gap: 10px;
+	            padding: 6px 2px;
+	        }
+	        .app-details-toggle::-webkit-details-marker { display: none; }
+	        .app-details-caret {
+	            width: 18px;
+	            height: 18px;
+	            color: rgba(203,213,225,0.75);
+	            transition: transform 150ms ease;
+	        }
+	        .app-details[open] .app-details-caret { transform: rotate(180deg); }
+	        .app-desc { margin: 8px 2px 0; }
+	        .app-actions {
+	            display: flex;
+	            justify-content: flex-end;
+	            gap: 10px;
+	            flex-wrap: wrap;
+	            margin-top: auto;
+	        }
+	        .app-download-form {
+	            margin: 0;
+	            display: flex;
+	            gap: 10px;
+	            align-items: center;
+	            justify-content: flex-end;
+	        }
         footer {
             margin-top: 18px;
             padding: 10px 2px 0;
@@ -357,16 +406,19 @@
             70% { transform: scale(1); box-shadow: 0 0 0 12px rgba(14,165,233,0); }
             100% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(14,165,233,0); }
         }
-        @media (max-width: 725px) {
-            body { padding: 18px 14px 48px; }
-            header { flex-direction: column; align-items: flex-start; gap: 10px; }
-            .inline-actions { flex-direction: column; gap: 12px; align-items: flex-start; }
-            .grid-2 { grid-template-columns: 1fr; }
-            .grid-split { grid-template-columns: 1fr; }
-            .search-input { width: 100%; max-width: 100%; }
-            button, input { width: 100%; }
-        }
-    </style>
+	        @media (max-width: 725px) {
+	            body { padding: 18px 14px 48px; }
+	            header { flex-direction: column; align-items: flex-start; gap: 10px; }
+	            .inline-actions { flex-direction: column; gap: 12px; align-items: flex-start; }
+	            .grid-2 { grid-template-columns: 1fr; }
+	            .grid-split { grid-template-columns: 1fr; }
+	            .search-input { width: 100%; max-width: 100%; }
+	            button, input { width: 100%; }
+	            .app-download-form { flex-wrap: nowrap; width: 100%; }
+	            .app-download-form select { flex: 1; min-width: 0; }
+	            .app-download-form button { width: auto; flex: 0 0 auto; }
+	        }
+	    </style>
 </head>
 <body>
 {% if toast_error or toast_success %}

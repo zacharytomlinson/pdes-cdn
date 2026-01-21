@@ -65,6 +65,11 @@ SMTP (password reset + invites):
 Logging:
 - `RUST_LOG` (optional): controls log level (example: `info,pdes_cdn=debug`).
 
+UI/branding (optional):
+- `APP_NAME` (optional): display name used in page titles/emails/footer (default: `PDES CDN Node`).
+- `APP_BUILD` (optional): build label shown in the footer (recommended: a release tag like `v0.1.2`).
+- `APP_COMMIT` (optional): commit shown in the footer (shortened automatically).
+
 Installer-only variables (optional):
 - `DB_NAME`, `DB_USER`, `DB_PASS` (if omitted, `DB_PASS` is randomized)
 - `SEED_WRITER_EMAIL`, `SEED_WRITER_PASSWORD` (if omitted, password is randomized)

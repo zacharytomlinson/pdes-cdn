@@ -36,28 +36,31 @@
     <div class="app-grid">
         {% for app in apps %}
             <section class="card app-card">
-                <div class="app-brand">
-                    <div class="app-icon" aria-hidden="true">
-                        {% if app.icon_url %}
-                            <img src="{{ app.icon_url }}" alt="" loading="lazy">
-                        {% else %}
-                            {{ app.icon_text }}
-                        {% endif %}
-                    </div>
-                    <div class="app-summary">
-                        <div class="app-title-row">
-                            <h2 class="app-title">{{ app.name }}</h2>
-                            {% if app.latest_version %}
-                                <span class="badge">{{ app.latest_version }}</span>
-                            {% endif %}
-                        </div>
-                        {% if app.description %}
-                            <p class="muted app-desc">{{ app.description }}</p>
-                        {% else %}
-                            <p class="muted app-desc">No description provided.</p>
-                        {% endif %}
-                    </div>
+                <div class="app-icon">
+                    <span class="app-icon-fallback" aria-hidden="true">{{ app.icon_text }}</span>
+                    {% if app.icon_url %}
+                        <img src="{{ app.icon_url }}" alt="{{ app.name }} icon" loading="lazy" onerror="this.style.display='none'">
+                    {% endif %}
                 </div>
+                <div class="app-banner">
+                    <h2 class="app-title">{{ app.name }}</h2>
+                    {% if app.latest_version %}
+                        <span class="badge">{{ app.latest_version }}</span>
+                    {% endif %}
+                </div>
+                <details class="app-details">
+                    <summary class="app-details-toggle">
+                        <span class="muted">Details</span>
+                        <svg class="app-details-caret" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <polyline points="6 9 12 15 18 9" />
+                        </svg>
+                    </summary>
+                    {% if app.description %}
+                        <p class="muted app-desc">{{ app.description }}</p>
+                    {% else %}
+                        <p class="muted app-desc">No description provided.</p>
+                    {% endif %}
+                </details>
                 <div class="app-actions">
                     {% if app.targets | length == 0 %}
                         <span class="muted">No package uploaded yet.</span>
@@ -71,24 +74,23 @@
                             </svg>
                             Download
                         </a>
-                    {% else %}
-                        <form method="get" action="/apps/{{ app.slug }}/download" style="margin: 0; display: flex; gap: 10px; align-items: center; justify-content: flex-end; flex-wrap: wrap;">
-                            <select name="target" aria-label="Select OS">
-                                {% for t in app.targets %}
-                                    <option value="{{ t.os }}:{{ t.arch }}">{{ t.os | upper }} ({{ t.arch }}) · {{ t.version }}</option>
-                                {% endfor %}
-                            </select>
-                            <button type="submit" class="icon-btn btn-compact">
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                    <polyline points="7 10 12 15 17 10" />
-                                    <line x1="12" y1="15" x2="12" y2="3" />
-                                </svg>
-                                Download
-                            </button>
-                        </form>
-                    {% endif %}
-                </div>
+	                    {% else %}
+	                        <form method="get" action="/apps/{{ app.slug }}/download" class="app-download-form">
+	                            <select name="target" aria-label="Select OS">
+	                                {% for t in app.targets %}
+	                                    <option value="{{ t.os }}:{{ t.arch }}">{{ t.os | upper }} ({{ t.arch }}) · {{ t.version }}</option>
+	                                {% endfor %}
+	                            </select>
+	                            <button type="submit" class="icon-btn btn-compact">
+	                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+	                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+	                                    <polyline points="7 10 12 15 17 10" />
+	                                    <line x1="12" y1="15" x2="12" y2="3" />
+	                                </svg>
+	                            </button>
+	                        </form>
+	                    {% endif %}
+	                </div>
             </section>
         {% endfor %}
     </div>

@@ -99,6 +99,11 @@ where
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        if self.status.is_server_error() {
+            error!(status = %self.status, message = %self.message, "request failed");
+        } else if self.status != StatusCode::NOT_FOUND {
+            warn!(status = %self.status, message = %self.message, "request rejected");
+        }
         match self.format {
             AppErrorFormat::Plain => (self.status, self.message).into_response(),
             AppErrorFormat::Html => {
@@ -1447,7 +1452,7 @@ async fn list_assigned_apps(
                     slug: slug.clone(),
                     name,
                     description,
-                    icon_url: icon_file_id.map(|_| format!("/apps/{}/icon", slug)),
+                    icon_url: icon_file_id.map(|id| format!("/apps/{}/icon?v={}", slug, id)),
                     latest_version: None,
                     can_download: false,
                     targets: Vec::new(),
@@ -1791,12 +1796,26 @@ async fn app_icon(
     };
     let slug = sanitize_slug(&slug);
 
-    if !is_writer(&user) {
-        let allowed: Option<i64> = sqlx::query_scalar(
+    let cached_file = if is_writer(&user) {
+        sqlx::query_as::<_, CachedFile>(
             r#"
-            select 1
+            select cf.id, cf.filename, cf.local_path, cf.size_bytes, cf.created_at
+            from apps a
+            join cached_files cf on cf.id = a.icon_file_id
+            where a.slug = $1
+            limit 1
+            "#,
+        )
+        .bind(&slug)
+        .fetch_optional(&state.pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, CachedFile>(
+            r#"
+            select cf.id, cf.filename, cf.local_path, cf.size_bytes, cf.created_at
             from apps a
             join app_assignments aa on aa.app_id = a.id
+            join cached_files cf on cf.id = a.icon_file_id
             where a.slug = $1 and aa.user_id = $2
             limit 1
             "#,
@@ -1804,22 +1823,14 @@ async fn app_icon(
         .bind(&slug)
         .bind(user.id)
         .fetch_optional(&state.pool)
-        .await?;
-        if allowed.is_none() {
-            return Err(AppError::new(StatusCode::NOT_FOUND, "Not found"));
-        }
-    }
+        .await?
+    };
 
-    let icon_id: Option<Uuid> =
-        sqlx::query_scalar("select icon_file_id from apps where slug = $1")
-            .bind(&slug)
-            .fetch_optional(&state.pool)
-            .await?;
-    let Some(icon_id) = icon_id else {
+    let Some(cached_file) = cached_file else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "Icon not found"));
     };
 
-    stream_cached_image(&state, icon_id).await
+    stream_cached_image_file(&state, &cached_file).await
 }
 
 async fn latest_firmware_json(
@@ -2740,19 +2751,15 @@ async fn api_download_package(
     Ok(response)
 }
 
-async fn stream_cached_image(state: &AppState, id: Uuid) -> AppResult<Response> {
-    let file = fetch_file_by_id(state, id).await?;
-    let Some(file) = file else {
-        return Err(AppError::new(StatusCode::NOT_FOUND, "File not found"));
-    };
-
-    let content_type = match std::path::Path::new(&file.filename)
+async fn stream_cached_image_file(state: &AppState, file: &CachedFile) -> AppResult<Response> {
+    let ext = std::path::Path::new(&file.filename)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase()
-        .as_str()
-    {
+        .to_string();
+    let is_svg = ext == "svg";
+    let content_type = match ext.as_str() {
         "png" => "image/png",
         "svg" => "image/svg+xml",
         _ => "application/octet-stream",
@@ -2773,12 +2780,19 @@ async fn stream_cached_image(state: &AppState, id: Uuid) -> AppResult<Response> 
         .await
         .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "File missing on disk"))?;
     let stream = ReaderStream::new(file_handle);
-    let response = Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
+        .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header(header::CACHE_CONTROL, "private, max-age=3600")
-        .body(Body::from_stream(stream))
-        .map_err(AppError::from)?;
+        .header(header::X_FRAME_OPTIONS, "DENY");
+    if is_svg {
+        builder = builder.header(
+            header::CONTENT_SECURITY_POLICY,
+            "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
+        );
+    }
+    let response = builder.body(Body::from_stream(stream)).map_err(AppError::from)?;
     Ok(response)
 }
 
@@ -3464,18 +3478,70 @@ fn render_email_template(state: &AppState, name: &str, mut ctx: TeraContext) -> 
 }
 
 fn insert_app_template_globals(ctx: &mut TeraContext) {
-    ctx.insert("app_name", "Palo Duro Embedded Systems");
-    ctx.insert("app_version", env!("CARGO_PKG_VERSION"));
-    if let Ok(build) = std::env::var("APP_BUILD") {
-        let build = build.trim().to_string();
-        if !build.is_empty() {
-            ctx.insert("app_build", &build);
+    fn is_placeholder_value(key: &str, value: &str) -> bool {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return true;
+        }
+        trimmed.eq_ignore_ascii_case("placeholder")
+            || trimmed.eq_ignore_ascii_case("changeme")
+            || trimmed.eq_ignore_ascii_case("replace_me")
+            || trimmed.eq_ignore_ascii_case("todo")
+            || trimmed.eq_ignore_ascii_case("unset")
+            || trimmed.eq_ignore_ascii_case("unknown")
+            || trimmed.eq_ignore_ascii_case("null")
+            || trimmed.eq_ignore_ascii_case("none")
+            || trimmed.eq_ignore_ascii_case("nil")
+            || trimmed.eq_ignore_ascii_case("n/a")
+            || trimmed == key
+            || trimmed == format!("${}", key)
+            || trimmed == format!("${{{}}}", key)
+            || trimmed == format!("__{}__", key)
+    }
+
+    fn cleaned_env_value(key: &str) -> Option<String> {
+        let value = std::env::var(key).ok()?;
+        let value = value
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\'')
+            .to_string();
+        if is_placeholder_value(key, &value) {
+            None
+        } else {
+            Some(value)
         }
     }
-    if let Ok(commit) = std::env::var("APP_COMMIT") {
-        let commit = commit.trim().to_string();
-        if !commit.is_empty() {
-            let short = commit.chars().take(8).collect::<String>();
+
+    fn cleaned_compile_time_value(key: &str, value: Option<&'static str>) -> Option<String> {
+        let value = value?;
+        let value = value
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\'')
+            .to_string();
+        if is_placeholder_value(key, &value) {
+            None
+        } else {
+            Some(value)
+        }
+    }
+
+    let app_name = cleaned_env_value("APP_NAME")
+        .or_else(|| cleaned_compile_time_value("APP_NAME", option_env!("APP_NAME")))
+        .unwrap_or_else(|| "PDES CDN Node".to_string());
+    ctx.insert("app_name", &app_name);
+    ctx.insert("app_version", env!("CARGO_PKG_VERSION"));
+
+    if let Some(build) = cleaned_env_value("APP_BUILD")
+        .or_else(|| cleaned_compile_time_value("APP_BUILD", option_env!("APP_BUILD")))
+    {
+        ctx.insert("app_build", &build);
+    }
+
+    if let Some(commit) = cleaned_env_value("APP_COMMIT")
+        .or_else(|| cleaned_compile_time_value("APP_COMMIT", option_env!("APP_COMMIT")))
+    {
+        let short = commit.chars().take(8).collect::<String>();
+        if !short.is_empty() {
             ctx.insert("app_commit", &short);
         }
     }
