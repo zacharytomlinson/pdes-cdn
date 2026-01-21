@@ -183,36 +183,12 @@ jobs:
       - name: Run DB migrations
         run: |
           set -euo pipefail
+          script_path="$(readlink -f "${GITHUB_WORKSPACE}/scripts/run_migrations.sh")"
           mig_dir="$(readlink -f "${GITHUB_WORKSPACE}/migrations")"
-          env_file="/etc/${SERVICE_NAME:-pdes-cdn}.env"
-          if [[ ! -f "$env_file" && -f /etc/pdes-cdn.env ]]; then
-            env_file="/etc/pdes-cdn.env"
-          fi
-          if [[ ! -f "$env_file" ]]; then
-            echo "Missing env file: ${env_file}" >&2
-            exit 1
-          fi
-          if ! command -v psql >/dev/null 2>&1; then
-            echo "Missing required command: psql" >&2
-            exit 1
-          fi
           if [[ "$(id -u)" -eq 0 ]]; then
-            # shellcheck disable=SC1090
-            source "$env_file"
-            : "${DATABASE_URL:?DATABASE_URL not set in env file}"
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "${mig_dir}/0005_app_store.sql"
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "${mig_dir}/0006_app_packages_platform.sql"
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "${mig_dir}/0007_api_tokens.sql"
+            /usr/bin/bash "$script_path" --service "${SERVICE_NAME:-pdes-cdn}" --migrations "$mig_dir"
           else
-            sudo -n env MIG_DIR="$mig_dir" ENV_FILE="$env_file" bash -lc '
-              set -euo pipefail
-              # shellcheck disable=SC1090
-              source "$ENV_FILE"
-              : "${DATABASE_URL:?DATABASE_URL not set in env file}"
-              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "${MIG_DIR}/0005_app_store.sql"
-              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "${MIG_DIR}/0006_app_packages_platform.sql"
-              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "${MIG_DIR}/0007_api_tokens.sql"
-            '
+            sudo -n /usr/bin/bash "$script_path" --service "${SERVICE_NAME:-pdes-cdn}" --migrations "$mig_dir"
           fi
 
       - name: Deploy on node (requires passwordless sudo)
