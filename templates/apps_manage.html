@@ -37,26 +37,69 @@
 <div class="alert success">Invited {{ new_invite_email }} with a temporary password emailed to them.</div>
 {% endif %}
 
-<div class="grid-split" style="margin-bottom: 18px;">
-    <section class="card">
-        <div class="inline-actions" style="align-items: flex-start;">
-            <div style="min-width: 0;">
-                <h2 style="margin: 0;">Apps</h2>
-                <p class="muted" style="margin: 6px 0 0;">Click an app to view assigned users. Use the pencil icon to open the full edit form.</p>
-            </div>
-            <div class="toolbar">
-                <input id="app-filter" class="search-input" type="search" placeholder="Filter apps…" autocomplete="off" aria-label="Filter apps">
-            </div>
+<section class="card" style="margin-bottom: 18px;">
+    <div class="inline-actions" style="align-items: flex-start;">
+        <div style="min-width: 0;">
+            <h2 style="margin: 0;">Apps</h2>
+            <p class="muted" style="margin: 6px 0 0;">Click an app to view assigned users. Use the pencil icon to edit the app.</p>
         </div>
+        <div class="toolbar">
+            <a class="pill-action icon-link" href="#create-app-panel" data-toggle-create-app aria-label="Create app">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9"/>
+                    <line x1="12" y1="8" x2="12" y2="16"/>
+                    <line x1="8" y1="12" x2="16" y2="12"/>
+                </svg>
+            </a>
+            <input id="app-filter" class="search-input" type="search" placeholder="Filter apps…" autocomplete="off" aria-label="Filter apps">
+        </div>
+    </div>
 
-        {% if apps | length == 0 %}
-        <p class="muted" style="margin: 14px 0 0;">No apps yet.</p>
-        {% else %}
-        <div class="app-grid" id="app-grid" style="margin-top: 14px;">
-            {% for app in apps %}
-            <details class="card app-card {% if (open_app_slug is defined and open_app_slug == app.slug) or (edit_app is defined and edit_app and edit_app.slug == app.slug) %}selected{% endif %}"
-	                     data-app-search="{{ app.name | lower }} {{ app.slug | lower }}"
-	                     {% if open_app_slug is defined and open_app_slug== app.slug %}open{% endif %}>
+    <div id="create-app-panel" class="stack" hidden style="margin-top: 14px; border-top: 1px dashed rgba(31,41,55,0.85); padding-top: 14px;">
+        <div class="inline-actions">
+            <h3 style="margin: 0;">Create app</h3>
+            <a class="pill-action icon-link" href="/apps/manage" data-close-create-app aria-label="Close">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M18 6L6 18"/>
+                    <path d="M6 6l12 12"/>
+                </svg>
+            </a>
+        </div>
+        <form method="post" action="/apps/create">
+            <div class="stack">
+                <label for="create-slug">App slug</label>
+                <input id="create-slug" name="slug" type="text" required placeholder="my-app">
+                <span class="muted">Stable ID (URLs, assignments). Use lowercase + dashes.</span>
+            </div>
+            <div class="stack">
+                <label for="create-name">Display name</label>
+                <input id="create-name" name="name" type="text" required placeholder="My App">
+            </div>
+            <div class="stack">
+                <label for="create-description">Description</label>
+                <input id="create-description" name="description" type="text" placeholder="What does this do?">
+            </div>
+            <div class="inline-actions">
+                <button type="submit" class="icon-btn btn-compact">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <circle cx="12" cy="12" r="9"/>
+                        <line x1="12" y1="8" x2="12" y2="16"/>
+                        <line x1="8" y1="12" x2="16" y2="12"/>
+                    </svg>
+                    Create
+                </button>
+            </div>
+        </form>
+    </div>
+
+    {% if apps | length == 0 %}
+    <p class="muted" style="margin: 14px 0 0;">No apps yet.</p>
+    {% else %}
+    <div class="app-grid" id="app-grid" style="margin-top: 14px;">
+        {% for app in apps %}
+            <details class="card app-card {% if open_app_slug is defined and open_app_slug == app.slug %}selected{% endif %}"
+                     data-app-search="{{ app.name | lower }} {{ app.slug | lower }}"
+                     {% if open_app_slug is defined and open_app_slug == app.slug %}open{% endif %}>
                 <summary class="app-card-summary">
                     <div class="app-icon">
                         <span class="app-icon-fallback" aria-hidden="true">{{ app.icon_text }}</span>
@@ -100,12 +143,12 @@
                     <div class="stack">
                         <div class="inline-actions">
                             <h3 style="margin: 0;">Assigned users</h3>
-                            <a class="pill-action icon-link" href="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}" aria-label="Open edit form">
+                            <a class="pill-action icon-link" href="#add-user-{{ app.slug }}" data-toggle-add-user="{{ app.slug }}" aria-label="Add user">
                                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                    <path d="M12 20h9"/>
-                                    <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+                                    <circle cx="12" cy="12" r="9"/>
+                                    <line x1="12" y1="8" x2="12" y2="16"/>
+                                    <line x1="8" y1="12" x2="16" y2="12"/>
                                 </svg>
-                                Edit
                             </a>
                         </div>
 
@@ -114,14 +157,12 @@
                             {% for u in app.assigned_users %}
                             <div class="inline-actions" style="gap: 12px;">
                                 <div style="min-width: 0;">
-	                                    <a href="/apps/manage?user={{ u.id }}&app={{ app.slug }}" class="truncate user-link{% if selected_user is defined and selected_user and selected_user.id == u.id %} selected{% endif %}" style="display: inline-block;">
-	                                        <code>{{ u.email }}</code>
-	                                    </a>
-	                                </div>
-	                                <div class="action-group">
-	                                    <form method="post" action="/apps/{{ app.slug }}/unassign" data-confirm="Revoke this user from the app?">
-	                                        <input type="hidden" name="user_id" value="{{ u.id }}">
-	                                        <input type="hidden" name="return_to" value="/apps/manage?app={{ app.slug }}">
+                                    <div class="truncate" style="display: inline-block;"><code>{{ u.email }}</code></div>
+                                </div>
+                                <div class="action-group">
+                                    <form method="post" action="/apps/{{ app.slug }}/unassign" data-confirm="Revoke this user from the app?">
+                                        <input type="hidden" name="user_id" value="{{ u.id }}">
+                                        <input type="hidden" name="return_to" value="/apps/manage?app={{ app.slug }}">
 	                                        <button type="submit" class="icon-btn btn-compact secondary" aria-label="Revoke user">
                                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                                                 <path d="M3 6h18"/>
@@ -142,7 +183,7 @@
                         {% endif %}
                     </div>
 
-                    <div class="stack">
+                    <div class="stack" id="add-user-{{ app.slug }}" hidden>
                         <h3 style="margin: 0;">Add user</h3>
                         <form method="post" action="/apps/{{ app.slug }}/assign">
                             <input type="hidden" name="return_to" value="/apps/manage?app={{ app.slug }}">
@@ -166,372 +207,201 @@
                                     </svg>
                                     Assign
                                 </button>
-                                <a class="pill-action icon-link" href="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}" aria-label="Open edit form">
-                                    Edit app
-                                </a>
                             </div>
                         </form>
                     </div>
-                </div>
-            </details>
-            {% endfor %}
-        </div>
-        {% endif %}
-    </section>
 
-    <aside class="card" id="detail-panel">
-        {% if edit_app is defined and edit_app %}
-        <div class="inline-actions" style="align-items: flex-start;">
-            <div style="min-width: 0;">
-                <h2 style="margin: 0;">Edit app</h2>
-                <div class="muted" style="margin-top: 6px;">
-                    <code>{{ edit_app.slug }}</code>
-                </div>
-            </div>
-            <div class="action-group">
-                <a class="pill-action icon-link" href="/apps/manage?app={{ edit_app.slug }}" aria-label="Close">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <path d="M18 6L6 18"/>
-                        <path d="M6 6l12 12"/>
-                    </svg>
-                </a>
-            </div>
-        </div>
-
-        <div class="stack-lg" style="margin-top: 14px;">
-            <section class="card" style="padding: 16px;">
-                <h3 style="margin-top: 0;">App details</h3>
-                <form method="post" action="/apps/{{ edit_app.slug }}/update" enctype="multipart/form-data">
-                    <input type="hidden" name="return_to" value="/apps/manage?edit={{ edit_app.slug }}&app={{ edit_app.slug }}">
-	                    <div class="stack">
-	                        <label for="edit-name">Display name</label>
-	                        <input id="edit-name" name="name" type="text" required value="{{ edit_app.name | escape }}">
-	                    </div>
-	                    <div class="stack">
-	                        <label for="edit-desc">Description</label>
-	                        <input id="edit-desc" name="description" type="text" value="{{ edit_app.description | default(value='') | escape }}">
-	                        <span class="muted">Changing these fields updates the current stored app metadata.</span>
-	                    </div>
-                    <div class="stack">
-                        <label for="edit-icon">Icon (optional)</label>
-                        <input id="edit-icon" name="icon" type="file" accept=".png,.svg">
-                    </div>
-                    <div class="inline-actions">
-                        <button type="submit" class="icon-btn btn-compact secondary">Save details</button>
-                    </div>
-                </form>
-            </section>
-
-            <section class="card" style="padding: 16px;">
-                <h3 style="margin-top: 0;">Packages</h3>
-                <p class="muted" style="margin-top: -6px;">Uploading a new archive with a new version creates a new version. Uploading with an existing version replaces that version.</p>
-
-                <details style="margin-top: 10px;" {% if edit_app.latest_pkg_version is not defined or not edit_app.latest_pkg_version %}open{% endif %}>
-                    <summary>Build package (recommended)</summary>
-                    <form method="post" action="/apps/{{ edit_app.slug }}/package/build" enctype="multipart/form-data" style="margin-top: 12px;">
-                        <input type="hidden" name="return_to" value="/apps/manage?edit={{ edit_app.slug }}&app={{ edit_app.slug }}">
-                        <div class="stack">
-                            <label for="pkg-os-{{ edit_app.slug }}">OS</label>
-                            <select id="pkg-os-{{ edit_app.slug }}" name="os" required>
-                                <option value="windows" selected>Windows</option>
-                                <option value="linux">Linux</option>
-                                <option value="macos">macOS</option>
-                            </select>
-                        </div>
-                        <div class="stack">
-                            <label for="pkg-arch-{{ edit_app.slug }}">Arch</label>
-                            <select id="pkg-arch-{{ edit_app.slug }}" name="arch" required>
-                                <option value="x86_64" selected>x86_64</option>
-                                <option value="aarch64">aarch64</option>
-                            </select>
-                        </div>
-                        <div class="stack">
-                            <label for="pkg-version-{{ edit_app.slug }}">Version</label>
-                            <input id="pkg-version-{{ edit_app.slug }}" name="version" type="text" required placeholder="1.2.3">
-                        </div>
-                        <div class="stack">
-                            <label for="pkg-display-{{ edit_app.slug }}">Display name (optional)</label>
-                            <input id="pkg-display-{{ edit_app.slug }}" name="display_name" type="text" placeholder="{{ edit_app.name }}">
-                        </div>
-                        <div class="stack">
-                            <label for="pkg-summary-{{ edit_app.slug }}">Summary (optional)</label>
-                            <input id="pkg-summary-{{ edit_app.slug }}" name="summary" type="text" placeholder="Desktop flasher + diagnostics">
-                        </div>
-                        <div class="stack">
-                            <label for="pkg-installer-{{ edit_app.slug }}">Installer</label>
-                            <input id="pkg-installer-{{ edit_app.slug }}" name="installer" type="file" required>
-                        </div>
-                        <div class="stack">
-                            <label for="pkg-icon-{{ edit_app.slug }}">Icon (.png or .svg)</label>
-                            <input id="pkg-icon-{{ edit_app.slug }}" name="icon" type="file" accept=".png,.svg" required>
-                        </div>
-                        <div class="stack">
-                            <label for="pkg-docs-{{ edit_app.slug }}">Support docs (optional)</label>
-                            <input id="pkg-docs-{{ edit_app.slug }}" name="docs" type="file" multiple>
-                        </div>
-                        <div class="inline-actions">
-                            <button type="submit" class="icon-btn btn-compact">
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                    <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
-                                    <polyline points="7 9 12 4 17 9"/>
-                                    <line x1="12" y1="4" x2="12" y2="16"/>
-                                </svg>
-                                Build pkg
-                            </button>
-                        </div>
-                    </form>
-                </details>
-
-                <details style="margin-top: 10px;">
-                    <summary>Or upload a pre-built .pkg</summary>
-                    <form method="post" action="/apps/{{ edit_app.slug }}/package/upload" enctype="multipart/form-data" style="margin-top: 12px;">
-                        <input type="hidden" name="return_to" value="/apps/manage?edit={{ edit_app.slug }}&app={{ edit_app.slug }}">
-                        <div class="stack">
-                            <label for="pkg-upload-os-{{ edit_app.slug }}">OS</label>
-                            <select id="pkg-upload-os-{{ edit_app.slug }}" name="os" required>
-                                <option value="windows" selected>Windows</option>
-                                <option value="linux">Linux</option>
-                                <option value="macos">macOS</option>
-                            </select>
-                        </div>
-                        <div class="stack">
-                            <label for="pkg-upload-arch-{{ edit_app.slug }}">Arch</label>
-                            <select id="pkg-upload-arch-{{ edit_app.slug }}" name="arch" required>
-                                <option value="x86_64" selected>x86_64</option>
-                                <option value="aarch64">aarch64</option>
-                                <option value="any">any</option>
-                            </select>
-                        </div>
-                        <div class="stack">
-                            <label for="pkg-upload-version-{{ edit_app.slug }}">Version</label>
-                            <input id="pkg-upload-version-{{ edit_app.slug }}" name="version" type="text" required placeholder="1.2.3">
-                        </div>
-                        <div class="stack">
-                            <label for="pkg-upload-file-{{ edit_app.slug }}">.pkg file</label>
-                            <input id="pkg-upload-file-{{ edit_app.slug }}" name="file" type="file" accept=".pkg" required>
-                        </div>
-                        <div class="inline-actions">
-                            <button type="submit" class="icon-btn btn-compact secondary">Upload prebuilt</button>
-                        </div>
-                    </form>
-                </details>
-            </section>
-
-            <section class="card" style="padding: 16px;">
-                <h3 style="margin-top: 0;">Firmware</h3>
-                <form method="post" action="/apps/{{ edit_app.slug }}/firmware/upload" enctype="multipart/form-data">
-                    <input type="hidden" name="return_to" value="/apps/manage?edit={{ edit_app.slug }}&app={{ edit_app.slug }}">
-                    <div class="stack">
-                        <label for="fw-channel-{{ edit_app.slug }}">Channel</label>
-                        <input id="fw-channel-{{ edit_app.slug }}" name="channel" type="text" value="stable" placeholder="stable">
-                    </div>
-                    <div class="stack">
-                        <label for="fw-version-{{ edit_app.slug }}">Version</label>
-                        <input id="fw-version-{{ edit_app.slug }}" name="version" type="text" required placeholder="2026.01.21">
-                    </div>
-                    <div class="stack">
-                        <label for="fw-file-{{ edit_app.slug }}">Firmware file</label>
-                        <input id="fw-file-{{ edit_app.slug }}" name="file" type="file" accept=".bin,.elf" required>
-                    </div>
-                    <div class="inline-actions">
-                        <button type="submit" class="icon-btn btn-compact">
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
-                                <polyline points="7 9 12 4 17 9"/>
-                                <line x1="12" y1="4" x2="12" y2="16"/>
-                            </svg>
-                            Upload firmware
-                        </button>
-                    </div>
-                </form>
-            </section>
-
-            <section class="card" style="padding: 16px;">
-                <h3 style="margin-top: 0;">Assignments</h3>
-                <form method="post" action="/apps/{{ edit_app.slug }}/assign">
-                    <input type="hidden" name="return_to" value="/apps/manage?edit={{ edit_app.slug }}&app={{ edit_app.slug }}">
-                    <div class="stack">
-                        <label for="edit-assign-user-{{ edit_app.slug }}">Add user</label>
-                        <select id="edit-assign-user-{{ edit_app.slug }}" name="user_id" required>
-                            <option value="" selected disabled>Select a user…</option>
-                            {% for u in users %}
-                            {% if u.permission == "reader" %}
-                            <option value="{{ u.id }}">{{ u.email }}</option>
-                            {% endif %}
-                            {% endfor %}
-                        </select>
-                    </div>
-                    <div class="inline-actions">
-                        <button type="submit" class="icon-btn btn-compact">Assign</button>
-                    </div>
-                </form>
-            </section>
-
-            <section class="card" style="padding: 16px; border-color: rgba(239,68,68,0.35);">
-                <h3 style="margin-top: 0; color: #fecdd3;">Danger zone</h3>
-                <p class="muted">Delete removes the app, assignments, and stored artifacts under its prefix.</p>
-	                <form method="post" action="/apps/{{ edit_app.slug }}/delete" data-confirm="Delete this app? This cannot be undone.">
-                    <div class="stack">
-                        <label for="confirm-delete">Type <code>{{ edit_app.slug }}</code> to confirm</label>
-                        <input id="confirm-delete" name="confirm_slug" type="text" required placeholder="{{ edit_app.slug }}">
-                    </div>
-                    <div class="inline-actions">
-                        <button type="submit" class="icon-btn btn-compact" style="background: linear-gradient(120deg, #ef4444, #f97316); color: #0b1222;">
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                <path d="M3 6h18"/>
-                                <path d="M8 6V4h8v2"/>
-                                <path d="M19 6l-1 14H6L5 6"/>
-                                <path d="M10 11v6"/>
-                                <path d="M14 11v6"/>
-                            </svg>
-                            Delete app
-                        </button>
-                    </div>
-                </form>
-            </section>
-        </div>
-        {% elif selected_user is defined and selected_user %}
-        <div class="inline-actions" style="align-items: flex-start;">
-            <div style="min-width: 0;">
-                <h2 style="margin: 0;">User assignments</h2>
-                <div class="muted" style="margin-top: 6px;">
-                    <code>{{ selected_user.email }}</code>
-                    · <span class="badge">{{ selected_user.permission }}</span>
-                </div>
-            </div>
-            <div class="action-group">
-                <a class="pill-action icon-link" href="/apps/manage{% if open_app_slug is defined and open_app_slug %}?app={{ open_app_slug }}{% endif %}" aria-label="Close">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <path d="M18 6L6 18"/>
-                        <path d="M6 6l12 12"/>
-                    </svg>
-                </a>
-            </div>
-        </div>
-
-        <div class="stack-lg" style="margin-top: 14px;">
-            <section class="card" style="padding: 16px;">
-                <h3 style="margin-top: 0;">Apps assigned</h3>
-                {% if selected_user_apps is defined and selected_user_apps | length > 0 %}
-                <div class="stack" style="gap: 10px;">
-                    {% for a in selected_user_apps %}
-                    <div class="inline-actions" style="gap: 12px;">
-                        <a href="/apps/manage?edit={{ a.slug }}&app={{ a.slug }}" class="truncate" style="display: inline-block;">
-                            <span class="badge">{{ a.name }}</span>
-                        </a>
-                        <div class="action-group">
-	                            <form method="post" action="/apps/{{ a.slug }}/unassign" data-confirm="Revoke this app from the user?">
-                                <input type="hidden" name="user_id" value="{{ selected_user.id }}">
-                                <input type="hidden" name="return_to" value="/apps/manage?user={{ selected_user.id }}{% if open_app_slug is defined and open_app_slug %}&app={{ open_app_slug }}{% endif %}">
-                                <button type="submit" class="icon-btn btn-compact secondary" aria-label="Revoke app">
+                    {% if edit_app is defined and edit_app and edit_app.slug == app.slug %}
+                    <div class="stack" style="margin-top: 14px; border-top: 1px dashed rgba(31,41,55,0.85); padding-top: 14px;">
+                        <div class="inline-actions" style="align-items: flex-start;">
+                            <div style="min-width: 0;">
+                                <h3 style="margin: 0;">Edit app</h3>
+                                <div class="muted" style="margin-top: 6px;"><code>{{ app.slug }}</code></div>
+                            </div>
+                            <div class="action-group">
+                                <a class="pill-action icon-link" href="/apps/manage?app={{ app.slug }}" aria-label="Close edit">
                                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                        <path d="M3 6h18"/>
-                                        <path d="M8 6V4h8v2"/>
-                                        <path d="M19 6l-1 14H6L5 6"/>
-                                        <path d="M10 11v6"/>
-                                        <path d="M14 11v6"/>
+                                        <path d="M18 6L6 18"/>
+                                        <path d="M6 6l12 12"/>
                                     </svg>
-                                    Revoke
-                                </button>
+                                </a>
+                            </div>
+                        </div>
+
+                        <div class="stack">
+                            <h4 style="margin: 0;">App details</h4>
+                            <form method="post" action="/apps/{{ app.slug }}/update" enctype="multipart/form-data">
+                                <input type="hidden" name="return_to" value="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}">
+                                <div class="stack">
+                                    <label for="edit-name-{{ app.slug }}">Display name</label>
+                                    <input id="edit-name-{{ app.slug }}" name="name" type="text" required value="{{ app.name | escape }}">
+                                </div>
+                                <div class="stack">
+                                    <label for="edit-desc-{{ app.slug }}">Description</label>
+                                    <input id="edit-desc-{{ app.slug }}" name="description" type="text" value="{{ app.description | default(value='') | escape }}">
+                                    <span class="muted">Changing these fields updates the current stored app metadata.</span>
+                                </div>
+                                <div class="stack">
+                                    <label for="edit-icon-{{ app.slug }}">Icon (optional)</label>
+                                    <input id="edit-icon-{{ app.slug }}" name="icon" type="file" accept=".png,.svg">
+                                </div>
+                                <div class="inline-actions">
+                                    <button type="submit" class="icon-btn btn-compact secondary">Save details</button>
+                                </div>
                             </form>
                         </div>
+
+                        <details style="margin-top: 10px;">
+                            <summary>Packages</summary>
+                            <div class="stack" style="margin-top: 12px;">
+                                <p class="muted" style="margin: 0;">Uploading a new archive with a new version creates a new version. Uploading with an existing version replaces that version.</p>
+                                <details style="margin-top: 10px;">
+                                    <summary>Build package (recommended)</summary>
+                                    <form method="post" action="/apps/{{ app.slug }}/package/build" enctype="multipart/form-data" style="margin-top: 12px;">
+                                        <input type="hidden" name="return_to" value="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}">
+                                        <div class="stack">
+                                            <label for="pkg-os-{{ app.slug }}">OS</label>
+                                            <select id="pkg-os-{{ app.slug }}" name="os" required>
+                                                <option value="windows" selected>Windows</option>
+                                                <option value="linux">Linux</option>
+                                                <option value="macos">macOS</option>
+                                            </select>
+                                        </div>
+                                        <div class="stack">
+                                            <label for="pkg-arch-{{ app.slug }}">Arch</label>
+                                            <select id="pkg-arch-{{ app.slug }}" name="arch" required>
+                                                <option value="x86_64" selected>x86_64</option>
+                                                <option value="aarch64">aarch64</option>
+                                            </select>
+                                        </div>
+                                        <div class="stack">
+                                            <label for="pkg-version-{{ app.slug }}">Version</label>
+                                            <input id="pkg-version-{{ app.slug }}" name="version" type="text" required placeholder="1.2.3">
+                                        </div>
+                                        <div class="stack">
+                                            <label for="pkg-display-{{ app.slug }}">Display name (optional)</label>
+                                            <input id="pkg-display-{{ app.slug }}" name="display_name" type="text" placeholder="{{ app.name }}">
+                                        </div>
+                                        <div class="stack">
+                                            <label for="pkg-summary-{{ app.slug }}">Summary (optional)</label>
+                                            <input id="pkg-summary-{{ app.slug }}" name="summary" type="text" placeholder="Desktop flasher + diagnostics">
+                                        </div>
+                                        <div class="stack">
+                                            <label for="pkg-installer-{{ app.slug }}">Installer</label>
+                                            <input id="pkg-installer-{{ app.slug }}" name="installer" type="file" required>
+                                        </div>
+                                        <div class="stack">
+                                            <label for="pkg-icon-{{ app.slug }}">Icon (.png or .svg)</label>
+                                            <input id="pkg-icon-{{ app.slug }}" name="icon" type="file" accept=".png,.svg" required>
+                                        </div>
+                                        <div class="stack">
+                                            <label for="pkg-docs-{{ app.slug }}">Support docs (optional)</label>
+                                            <input id="pkg-docs-{{ app.slug }}" name="docs" type="file" multiple>
+                                        </div>
+                                        <div class="inline-actions">
+                                            <button type="submit" class="icon-btn btn-compact">Build pkg</button>
+                                        </div>
+                                    </form>
+                                </details>
+                                <details style="margin-top: 10px;">
+                                    <summary>Upload a pre-built .pkg</summary>
+                                    <form method="post" action="/apps/{{ app.slug }}/package/upload" enctype="multipart/form-data" style="margin-top: 12px;">
+                                        <input type="hidden" name="return_to" value="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}">
+                                        <div class="stack">
+                                            <label for="pkg-upload-os-{{ app.slug }}">OS</label>
+                                            <select id="pkg-upload-os-{{ app.slug }}" name="os" required>
+                                                <option value="windows" selected>Windows</option>
+                                                <option value="linux">Linux</option>
+                                                <option value="macos">macOS</option>
+                                            </select>
+                                        </div>
+                                        <div class="stack">
+                                            <label for="pkg-upload-arch-{{ app.slug }}">Arch</label>
+                                            <select id="pkg-upload-arch-{{ app.slug }}" name="arch" required>
+                                                <option value="x86_64" selected>x86_64</option>
+                                                <option value="aarch64">aarch64</option>
+                                                <option value="any">any</option>
+                                            </select>
+                                        </div>
+                                        <div class="stack">
+                                            <label for="pkg-upload-version-{{ app.slug }}">Version</label>
+                                            <input id="pkg-upload-version-{{ app.slug }}" name="version" type="text" required placeholder="1.2.3">
+                                        </div>
+                                        <div class="stack">
+                                            <label for="pkg-upload-file-{{ app.slug }}">.pkg file</label>
+                                            <input id="pkg-upload-file-{{ app.slug }}" name="file" type="file" accept=".pkg" required>
+                                        </div>
+                                        <div class="inline-actions">
+                                            <button type="submit" class="icon-btn btn-compact secondary">Upload prebuilt</button>
+                                        </div>
+                                    </form>
+                                </details>
+                            </div>
+                        </details>
+
+                        <details style="margin-top: 10px;">
+                            <summary>Firmware</summary>
+                            <form method="post" action="/apps/{{ app.slug }}/firmware/upload" enctype="multipart/form-data" style="margin-top: 12px;">
+                                <input type="hidden" name="return_to" value="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}">
+                                <div class="stack">
+                                    <label for="fw-channel-{{ app.slug }}">Channel</label>
+                                    <input id="fw-channel-{{ app.slug }}" name="channel" type="text" value="stable" placeholder="stable">
+                                </div>
+                                <div class="stack">
+                                    <label for="fw-version-{{ app.slug }}">Version</label>
+                                    <input id="fw-version-{{ app.slug }}" name="version" type="text" required placeholder="2026.01.21">
+                                </div>
+                                <div class="stack">
+                                    <label for="fw-file-{{ app.slug }}">Firmware file</label>
+                                    <input id="fw-file-{{ app.slug }}" name="file" type="file" accept=".bin,.elf" required>
+                                </div>
+                                <div class="inline-actions">
+                                    <button type="submit" class="icon-btn btn-compact">Upload firmware</button>
+                                </div>
+                            </form>
+                        </details>
+
+                        <details style="margin-top: 10px;">
+                            <summary>Delete app</summary>
+                            <form method="post" action="/apps/{{ app.slug }}/delete" data-confirm="Delete this app? This cannot be undone." style="margin-top: 12px;">
+                                <div class="stack">
+                                    <label for="confirm-delete-{{ app.slug }}">Type <code>{{ app.slug }}</code> to confirm</label>
+                                    <input id="confirm-delete-{{ app.slug }}" name="confirm_slug" type="text" required placeholder="{{ app.slug }}">
+                                </div>
+                                <div class="inline-actions">
+                                    <button type="submit" class="icon-btn btn-compact" style="background: linear-gradient(120deg, #ef4444, #f97316); color: #0b1222;">Delete app</button>
+                                </div>
+                            </form>
+                        </details>
                     </div>
-                    {% endfor %}
+                    {% endif %}
                 </div>
-                {% else %}
-                <p class="muted">No apps assigned.</p>
-                {% endif %}
-            </section>
+            </details>
+        {% endfor %}
+    </div>
+    {% endif %}
+</section>
 
-            <section class="card" style="padding: 16px;">
-                <h3 style="margin-top: 0;">Add app</h3>
-                <form method="post" action="/apps/assign">
-                    <input type="hidden" name="user_id" value="{{ selected_user.id }}">
-                    <input type="hidden" name="return_to" value="/apps/manage?user={{ selected_user.id }}{% if open_app_slug is defined and open_app_slug %}&app={{ open_app_slug }}{% endif %}">
-                    <div class="stack">
-                        <label for="user-add-app">App</label>
-                        <select id="user-add-app" name="slug" required>
-                            <option value="" selected disabled>Select an app…</option>
-                            {% for a in apps %}
-                            <option value="{{ a.slug }}">{{ a.name }} ({{ a.slug }})</option>
-                            {% endfor %}
-                        </select>
-                    </div>
-                    <div class="inline-actions">
-                        <button type="submit" class="icon-btn btn-compact">
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                <circle cx="12" cy="12" r="9"/>
-                                <line x1="12" y1="8" x2="12" y2="16"/>
-                                <line x1="8" y1="12" x2="16" y2="12"/>
-                            </svg>
-                            Assign
-                        </button>
-                    </div>
-                </form>
-            </section>
+<section class="card" style="margin-top: 18px;">
+    <h2 style="margin-top: 0;">Invite user</h2>
+    <p class="muted">Invite a reader account (must reset password on first login).</p>
+    <form method="post" action="/invite">
+        <div class="stack">
+            <label for="invite_email">User email</label>
+            <input id="invite_email" name="email" type="email" required placeholder="user@example.com">
         </div>
-        {% else %}
-        <h2 style="margin-top: 0;">Details</h2>
-        <p class="muted">Select a user to manage app assignments, or open an app’s edit form.</p>
-        <ul class="muted" style="margin: 12px 0 0; padding-left: 18px;">
-            <li>Click a user email inside an app to open the user assignment widget.</li>
-            <li>Use the pencil icon to open the full edit form for that app.</li>
-        </ul>
-        {% endif %}
-    </aside>
-</div>
-
-<div class="grid-2" style="margin-top: 18px;">
-    <section class="card">
-        <h2 style="margin-top: 0;">Create app</h2>
-        <form method="post" action="/apps/create">
-            <div class="stack">
-                <label for="slug">App slug</label>
-                <input id="slug" name="slug" type="text" required placeholder="my-app">
-                <span class="muted">Stable ID (URLs, assignments). Use lowercase + dashes.</span>
-            </div>
-            <div class="stack">
-                <label for="name">Display name</label>
-                <input id="name" name="name" type="text" required placeholder="My App">
-            </div>
-            <div class="stack">
-                <label for="description">Description</label>
-                <input id="description" name="description" type="text" placeholder="What does this do?">
-            </div>
-            <div class="inline-actions">
-                <button type="submit" class="icon-btn btn-compact">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="12" cy="12" r="9"/>
-                        <line x1="12" y1="8" x2="12" y2="16"/>
-                        <line x1="8" y1="12" x2="16" y2="12"/>
-                    </svg>
-                    Create
-                </button>
-            </div>
-        </form>
-    </section>
-
-    <section class="card">
-        <h2 style="margin-top: 0;">Invite user</h2>
-        <p class="muted">Invite a reader account (must reset password on first login).</p>
-        <form method="post" action="/invite">
-            <div class="stack">
-                <label for="invite_email">User email</label>
-                <input id="invite_email" name="email" type="email" required placeholder="user@example.com">
-            </div>
-            <div class="inline-actions">
-                <button type="submit" class="icon-btn btn-compact">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="12" cy="12" r="9"/>
-                        <line x1="12" y1="8" x2="12" y2="16"/>
-                        <line x1="8" y1="12" x2="16" y2="12"/>
-                    </svg>
-                    Invite user
-                </button>
-            </div>
-        </form>
-    </section>
-</div>
+        <div class="inline-actions">
+            <button type="submit" class="icon-btn btn-compact">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9"/>
+                    <line x1="12" y1="8" x2="12" y2="16"/>
+                    <line x1="8" y1="12" x2="16" y2="12"/>
+                </svg>
+                Invite user
+            </button>
+        </div>
+    </form>
+</section>
 
 <section class="card" style="margin-top: 18px;">
     <h2 style="margin-top: 0;">Notes</h2>
@@ -575,28 +445,70 @@
 </section>
 
 <script>
-	    (() => {
-	      const input = document.getElementById("app-filter");
-	      const grid = document.getElementById("app-grid");
-	      if (!input || !grid) return;
-	      const cards = Array.from(grid.querySelectorAll("details[data-app-search]"));
-      const apply = () => {
-        const q = input.value.trim().toLowerCase();
-        for (const card of cards) {
-          const hay = card.getAttribute("data-app-search") || "";
-          card.style.display = (!q || hay.includes(q)) ? "" : "none";
-        }
-      };
-	      input.addEventListener("input", apply);
-	    })();
-	    (() => {
-	      document.addEventListener("submit", (event) => {
-	        const form = event.target;
-	        if (!(form instanceof HTMLFormElement)) return;
-	        const message = form.getAttribute("data-confirm");
-	        if (!message) return;
-	        if (!window.confirm(message)) event.preventDefault();
-	      });
-	    })();
-	</script>
+(() => {
+  const input = document.getElementById("app-filter");
+  const grid = document.getElementById("app-grid");
+  if (!input || !grid) return;
+  const cards = Array.from(grid.querySelectorAll("details[data-app-search]"));
+  const apply = () => {
+    const q = input.value.trim().toLowerCase();
+    for (const card of cards) {
+      const hay = card.getAttribute("data-app-search") || "";
+      card.style.display = (!q || hay.includes(q)) ? "" : "none";
+    }
+  };
+  input.addEventListener("input", apply);
+})();
+
+(() => {
+  document.addEventListener("submit", (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement)) return;
+    const message = form.getAttribute("data-confirm");
+    if (!message) return;
+    if (!window.confirm(message)) event.preventDefault();
+  });
+})();
+
+(() => {
+  const panel = document.getElementById("create-app-panel");
+  const open = document.querySelector("[data-toggle-create-app]");
+  if (!panel || !open) return;
+  const show = () => {
+    panel.hidden = false;
+    const input = panel.querySelector("input, select, button");
+    if (input) input.focus();
+  };
+  const hide = () => {
+    panel.hidden = true;
+  };
+  open.addEventListener("click", (event) => {
+    event.preventDefault();
+    if (panel.hidden) show(); else hide();
+  });
+  document.addEventListener("click", (event) => {
+    const close = event.target.closest("[data-close-create-app]");
+    if (!close) return;
+    event.preventDefault();
+    hide();
+  });
+})();
+
+(() => {
+  document.addEventListener("click", (event) => {
+    const toggle = event.target.closest("[data-toggle-add-user]");
+    if (!toggle) return;
+    event.preventDefault();
+    const slug = toggle.getAttribute("data-toggle-add-user");
+    if (!slug) return;
+    const panel = document.getElementById(`add-user-${slug}`);
+    if (!panel) return;
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) {
+      const select = panel.querySelector("select, input, button");
+      if (select) select.focus();
+    }
+  });
+})();
+</script>
 {% endblock content %}

@@ -855,7 +855,7 @@ async fn portal(State(state): State<AppState>, jar: SignedCookieJar) -> AppResul
     }
 
     let response =
-        render_apps_manage_with_toast(&state, &user, None, None, None, None, None, None).await?;
+        render_apps_manage_with_toast(&state, &user, None, None, None, None, None).await?;
     Ok((jar, response).into_response())
 }
 
@@ -1313,7 +1313,6 @@ async fn invite_user(
             None,
             None,
             None,
-            None,
         )
         .await?;
         return Ok((jar, response).into_response());
@@ -1328,7 +1327,6 @@ async fn invite_user(
             &state,
             &user,
             Some("User already exists"),
-            None,
             None,
             None,
             None,
@@ -1385,17 +1383,9 @@ async fn invite_user(
     let _ = send_email(&email, subject, &body, Some(body_html)).await;
 
     let toast = format!("Invited {}.", email);
-    let response = render_apps_manage_with_toast(
-        &state,
-        &user,
-        None,
-        Some(&toast),
-        Some(&email),
-        None,
-        None,
-        None,
-    )
-    .await?;
+    let response =
+        render_apps_manage_with_toast(&state, &user, None, Some(&toast), Some(&email), None, None)
+            .await?;
     Ok((jar, response).into_response())
 }
 
@@ -1571,9 +1561,6 @@ async fn apps_manage(
         .get("edit")
         .map(|s| sanitize_slug(s))
         .filter(|s| !s.is_empty());
-    let selected_user_id = query
-        .get("user")
-        .and_then(|s| Uuid::parse_str(s.trim()).ok());
     let toast_success = query.get("toast_success").map(|s| s.as_str());
     let toast_error = query.get("toast_error").map(|s| s.as_str());
 
@@ -1584,7 +1571,6 @@ async fn apps_manage(
         toast_success,
         None,
         open_app_slug,
-        selected_user_id,
         edit_app_slug,
     )
     .await?;
@@ -1598,7 +1584,6 @@ async fn render_apps_manage_with_toast(
     toast_success: Option<&str>,
     new_invite_email: Option<&str>,
     open_app_slug: Option<String>,
-    selected_user_id: Option<Uuid>,
     edit_app_slug: Option<String>,
 ) -> AppResult<Response> {
     let mut apps = sqlx::query_as::<_, AppManageView>(
@@ -1678,7 +1663,7 @@ async fn render_apps_manage_with_toast(
             .fetch_all(&state.pool)
             .await?;
 
-    let assignments = sqlx::query_as::<_, (String, String, String)>(
+    let assignments = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
         r#"
         select u.email, a.slug, a.name
         from users u
@@ -1703,8 +1688,10 @@ async fn render_apps_manage_with_toast(
             .unwrap_or("unknown")
             .to_ascii_lowercase();
         let apps_for_user = org_map.entry(org).or_default().entry(email).or_default();
-        if !slug.is_empty() {
-            apps_for_user.push(UserAppView { slug, name });
+        if let (Some(slug), Some(name)) = (slug, name) {
+            if !slug.is_empty() {
+                apps_for_user.push(UserAppView { slug, name });
+            }
         }
     }
     let mut org_assignments: Vec<OrgAssignmentsView> = Vec::new();
@@ -1725,24 +1712,6 @@ async fn render_apps_manage_with_toast(
         .and_then(|slug| apps.iter().find(|a| a.slug == slug))
         .cloned();
 
-    let selected_user = selected_user_id.and_then(|id| users.iter().find(|u| u.id == id).cloned());
-    let selected_user_apps = if let Some(selected_user) = &selected_user {
-        sqlx::query_as::<_, UserAppView>(
-            r#"
-            select a.slug as slug, a.name as name
-            from apps a
-            join app_assignments aa on aa.app_id = a.id
-            where aa.user_id = $1
-            order by a.name
-            "#,
-        )
-        .bind(selected_user.id)
-        .fetch_all(&state.pool)
-        .await?
-    } else {
-        Vec::new()
-    };
-
     let mut ctx = TeraContext::new();
     ctx.insert("user_email", &user.email);
     ctx.insert("apps", &apps);
@@ -1751,8 +1720,6 @@ async fn render_apps_manage_with_toast(
     ctx.insert("can_write", &true);
     ctx.insert("open_app_slug", &open_app_slug);
     ctx.insert("edit_app", &edit_app);
-    ctx.insert("selected_user", &selected_user);
-    ctx.insert("selected_user_apps", &selected_user_apps);
     if let Some(message) = toast_error {
         ctx.insert("toast_error", message);
     }
@@ -2080,7 +2047,6 @@ async fn delete_app(
             None,
             None,
             None,
-            None,
         )
         .await?;
         return Ok((jar, response).into_response());
@@ -2096,7 +2062,6 @@ async fn delete_app(
             &state,
             &user,
             Some("App not found."),
-            None,
             None,
             None,
             None,
@@ -2134,8 +2099,7 @@ async fn delete_app(
 
     let toast = format!("Deleted app {}.", slug);
     let response =
-        render_apps_manage_with_toast(&state, &user, None, Some(&toast), None, None, None, None)
-            .await?;
+        render_apps_manage_with_toast(&state, &user, None, Some(&toast), None, None, None).await?;
     Ok((jar, response).into_response())
 }
 
