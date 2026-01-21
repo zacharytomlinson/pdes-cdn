@@ -140,6 +140,7 @@ impl From<&CachedFile> for CachedFileView {
 #[derive(Debug, Deserialize)]
 struct ListFilesQuery {
     q: Option<String>,
+    bucket: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -606,28 +607,57 @@ async fn list_files(
         return Ok((jar, Redirect::to("/login")).into_response());
     };
     let hx = is_hx_request(&headers);
-    info!(user_id = %user.id, email = %user.email, hx = %hx, q = ?query.q, "list_files");
+    info!(
+        user_id = %user.id,
+        email = %user.email,
+        hx = %hx,
+        q = ?query.q,
+        bucket = ?query.bucket,
+        "list_files"
+    );
 
     let files = fetch_files(&state).await?;
-    let filtered: Vec<CachedFile> = match query.q.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        Some(q) => {
-            let q = q.to_ascii_lowercase();
-            files
-                .into_iter()
-                .filter(|f| {
-                    f.filename.to_ascii_lowercase().contains(&q)
-                        || f.local_path.to_ascii_lowercase().contains(&q)
-                })
-                .collect()
-        }
+    let selected_bucket = query
+        .bucket
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let filtered_by_bucket: Vec<CachedFile> = match selected_bucket {
+        Some(bucket) => files
+            .into_iter()
+            .filter(|file| {
+                bucket_path_from_local(&file.local_path)
+                    .as_ref()
+                    .is_some_and(|path| path == bucket)
+            })
+            .collect(),
         None => files,
     };
+    let filtered: Vec<CachedFile> =
+        match query.q.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            Some(q) => {
+                let q = q.to_ascii_lowercase();
+                filtered_by_bucket
+                    .into_iter()
+                    .filter(|f| {
+                        f.filename.to_ascii_lowercase().contains(&q)
+                            || f.local_path.to_ascii_lowercase().contains(&q)
+                    })
+                    .collect()
+            }
+            None => filtered_by_bucket,
+        };
 
     let file_views: Vec<CachedFileView> = filtered.iter().map(CachedFileView::from).collect();
     let mut ctx = TeraContext::new();
     ctx.insert("files", &file_views);
     ctx.insert("q", &query.q);
+    ctx.insert("selected_bucket", &query.bucket);
     ctx.insert("can_write", &is_writer(&user));
+    if is_writer(&user) {
+        let buckets = fetch_buckets(&state).await?;
+        ctx.insert("buckets", &buckets);
+    }
 
     let html = if hx {
         render_template(&state, "partials/file_table.html", ctx)?
