@@ -269,7 +269,9 @@
             border: 1px solid rgba(14,165,233,0.35);
             color: #bae6fd;
             flex: 0 0 auto;
+            overflow: hidden;
         }
+        .app-icon img { width: 100%; height: 100%; object-fit: cover; display: block; }
         .app-summary { min-width: 0; flex: 1; }
         .app-title-row {
             display: flex;
@@ -425,7 +427,7 @@
         {% block content %}{% endblock content %}
     </main>
     <footer>
-        <span>v{{ app_version }}{% if app_commit %} ({{ app_commit }}){% endif %}{% if app_build %} · {{ app_build }}{% endif %}</span>
+        <span>{% if app_build %}{{ app_build }}{% else %}v{{ app_version }}{% endif %}{% if app_commit %} ({{ app_commit }}){% endif %}</span>
         <span>{{ app_name }}</span>
     </footer>
 </div>

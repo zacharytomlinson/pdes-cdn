@@ -348,6 +348,7 @@ struct AppManageView {
     slug: String,
     name: String,
     description: Option<String>,
+    icon_file_id: Option<Uuid>,
     latest_pkg_version: Option<String>,
     latest_pkg_os: Option<String>,
     latest_pkg_arch: Option<String>,
@@ -368,10 +369,29 @@ struct AppCardView {
     slug: String,
     name: String,
     description: Option<String>,
+    icon_url: Option<String>,
     latest_version: Option<String>,
     can_download: bool,
     icon_text: String,
     targets: Vec<AppTargetView>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct OrgAssignmentsView {
+    org: String,
+    users: Vec<UserAssignmentsView>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct UserAssignmentsView {
+    email: String,
+    apps: Vec<UserAppView>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct UserAppView {
+    slug: String,
+    name: String,
 }
 
 #[tokio::main]
@@ -496,6 +516,7 @@ async fn main() -> AppResult<()> {
         .route("/apps/create", post(create_app))
         .route("/apps/:slug/assign", post(assign_app))
         .route("/apps/:slug/download", get(download_latest_pkg))
+        .route("/apps/:slug/icon", get(app_icon))
         .route("/apps/:slug/firmware/latest", get(latest_firmware_json))
         .route(
             "/apps/:slug/firmware/latest/download",
@@ -1380,6 +1401,7 @@ async fn list_assigned_apps(
             String,
             String,
             Option<String>,
+            Option<Uuid>,
             Option<String>,
             Option<String>,
             Option<String>,
@@ -1390,6 +1412,7 @@ async fn list_assigned_apps(
             a.slug,
             a.name,
             a.description,
+            a.icon_file_id,
             p.os,
             p.arch,
             p.version
@@ -1410,7 +1433,7 @@ async fn list_assigned_apps(
     .await?;
 
     let mut apps: Vec<AppCardView> = Vec::new();
-    for (slug, name, description, os, arch, version) in rows {
+    for (slug, name, description, icon_file_id, os, arch, version) in rows {
         let existing = apps.iter_mut().find(|a| a.slug == slug);
         let entry = match existing {
             Some(a) => a,
@@ -1424,6 +1447,7 @@ async fn list_assigned_apps(
                     slug: slug.clone(),
                     name,
                     description,
+                    icon_url: icon_file_id.map(|_| format!("/apps/{}/icon", slug)),
                     latest_version: None,
                     can_download: false,
                     targets: Vec::new(),
@@ -1481,6 +1505,7 @@ async fn render_apps_manage_with_toast(
             a.slug as slug,
             a.name as name,
             a.description as description,
+            a.icon_file_id as icon_file_id,
             lp.version as latest_pkg_version,
             lp.os as latest_pkg_os,
             lp.arch as latest_pkg_arch,
@@ -1517,10 +1542,48 @@ async fn render_apps_manage_with_toast(
         .fetch_all(&state.pool)
         .await?;
 
+    let assignments = sqlx::query_as::<_, (String, String, String)>(
+        r#"
+        select u.email, a.slug, a.name
+        from users u
+        left join app_assignments aa on aa.user_id = u.id
+        left join apps a on a.id = aa.app_id
+        where u.permission = 'reader'
+        order by u.email, a.name
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    let mut org_map: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<UserAppView>>> =
+        std::collections::BTreeMap::new();
+    for (email, slug, name) in assignments {
+        let org = email
+            .split('@')
+            .nth(1)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unknown")
+            .to_ascii_lowercase();
+        let apps_for_user = org_map.entry(org).or_default().entry(email).or_default();
+        if !slug.is_empty() {
+            apps_for_user.push(UserAppView { slug, name });
+        }
+    }
+    let mut org_assignments: Vec<OrgAssignmentsView> = Vec::new();
+    for (org, users) in org_map {
+        let mut user_views: Vec<UserAssignmentsView> = users
+            .into_iter()
+            .map(|(email, apps)| UserAssignmentsView { email, apps })
+            .collect();
+        user_views.sort_by(|a, b| a.email.cmp(&b.email));
+        org_assignments.push(OrgAssignmentsView { org, users: user_views });
+    }
+
     let mut ctx = TeraContext::new();
     ctx.insert("user_email", &user.email);
     ctx.insert("apps", &apps);
     ctx.insert("users", &users);
+    ctx.insert("org_assignments", &org_assignments);
     ctx.insert("can_write", &true);
     if let Some(message) = toast_error {
         ctx.insert("toast_error", message);
@@ -1715,6 +1778,48 @@ async fn download_latest_pkg(
 
     info!(email = %user.email, app_slug = %slug, pkg_version = %version, pkg_os = %os, pkg_arch = %arch, file_id = %file_id, "download_latest_pkg");
     stream_cached_file(&state, file_id, jar).await
+}
+
+async fn app_icon(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    let slug = sanitize_slug(&slug);
+
+    if !is_writer(&user) {
+        let allowed: Option<i64> = sqlx::query_scalar(
+            r#"
+            select 1
+            from apps a
+            join app_assignments aa on aa.app_id = a.id
+            where a.slug = $1 and aa.user_id = $2
+            limit 1
+            "#,
+        )
+        .bind(&slug)
+        .bind(user.id)
+        .fetch_optional(&state.pool)
+        .await?;
+        if allowed.is_none() {
+            return Err(AppError::new(StatusCode::NOT_FOUND, "Not found"));
+        }
+    }
+
+    let icon_id: Option<Uuid> =
+        sqlx::query_scalar("select icon_file_id from apps where slug = $1")
+            .bind(&slug)
+            .fetch_optional(&state.pool)
+            .await?;
+    let Some(icon_id) = icon_id else {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "Icon not found"));
+    };
+
+    stream_cached_image(&state, icon_id).await
 }
 
 async fn latest_firmware_json(
@@ -2180,6 +2285,15 @@ async fn build_app_package(
     );
     let stored = store_local_file_as_cached(&state, &pkg_out, &pkg_filename, &prefix).await?;
 
+    let icon_prefix = format!("apps/{}/icon", sanitize_bucket(&slug));
+    let icon_stored =
+        store_local_file_as_cached(&state, &icon_path, &icon_name, &icon_prefix).await?;
+    let _ = sqlx::query("update apps set icon_file_id = $1 where id = $2")
+        .bind(icon_stored.id)
+        .bind(app_id)
+        .execute(&state.pool)
+        .await;
+
     let package_id = Uuid::new_v4();
     sqlx::query(
         r#"
@@ -2623,6 +2737,48 @@ async fn api_download_package(
         .body(Body::from_stream(stream))
         .map_err(AppError::from)?;
 
+    Ok(response)
+}
+
+async fn stream_cached_image(state: &AppState, id: Uuid) -> AppResult<Response> {
+    let file = fetch_file_by_id(state, id).await?;
+    let Some(file) = file else {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "File not found"));
+    };
+
+    let content_type = match std::path::Path::new(&file.filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        _ => "application/octet-stream",
+    };
+
+    let path = state.cache_dir.join(&file.local_path);
+    let path = tokio::fs::canonicalize(path)
+        .await
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "File missing on disk"))?;
+    if !path.starts_with(&state.cache_dir) {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "Invalid file location",
+        ));
+    }
+
+    let file_handle = File::open(&path)
+        .await
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "File missing on disk"))?;
+    let stream = ReaderStream::new(file_handle);
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "private, max-age=3600")
+        .body(Body::from_stream(stream))
+        .map_err(AppError::from)?;
     Ok(response)
 }
 

@@ -37,7 +37,13 @@
         {% for app in apps %}
             <section class="card app-card">
                 <div class="app-brand">
-                    <div class="app-icon" aria-hidden="true">{{ app.icon_text }}</div>
+                    <div class="app-icon" aria-hidden="true">
+                        {% if app.icon_url %}
+                            <img src="{{ app.icon_url }}" alt="" loading="lazy">
+                        {% else %}
+                            {{ app.icon_text }}
+                        {% endif %}
+                    </div>
                     <div class="app-summary">
                         <div class="app-title-row">
                             <h2 class="app-title">{{ app.name }}</h2>

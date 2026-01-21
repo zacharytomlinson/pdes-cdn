@@ -219,6 +219,7 @@ create table if not exists apps (
     slug text not null unique,
     name text not null,
     description text,
+    icon_file_id uuid references cached_files(id),
     created_at timestamptz not null default now()
 );
 

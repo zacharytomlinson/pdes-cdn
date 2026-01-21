@@ -37,6 +37,40 @@
     <div class="alert success">Invited {{ new_invite_email }} with a temporary password emailed to them.</div>
 {% endif %}
 
+<section class="card" style="margin-bottom: 18px;">
+    <h2 style="margin-top: 0;">Assignments</h2>
+    <p class="muted">Apps assigned to users (grouped by email domain).</p>
+    {% if org_assignments is defined and org_assignments | length > 0 %}
+        <div class="stack-lg" style="margin-top: 12px; gap: 12px;">
+            {% for org in org_assignments %}
+                <details>
+                    <summary>{{ org.org }}</summary>
+                    <div class="stack" style="margin-top: 10px;">
+                        {% for u in org.users %}
+                            <div class="inline-actions" style="gap: 12px; align-items: flex-start;">
+                                <div style="min-width: 0;">
+                                    <div class="truncate"><code>{{ u.email }}</code></div>
+                                </div>
+                                <div class="action-group" style="justify-content: flex-end;">
+                                    {% if u.apps | length == 0 %}
+                                        <span class="muted">No apps assigned</span>
+                                    {% else %}
+                                        {% for a in u.apps %}
+                                            <span class="badge">{{ a.name }}</span>
+                                        {% endfor %}
+                                    {% endif %}
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                </details>
+            {% endfor %}
+        </div>
+    {% else %}
+        <p class="muted">No reader users found.</p>
+    {% endif %}
+</section>
+
 <div class="grid-2">
     <section class="card">
         <h2 style="margin-top: 0;">Create app</h2>
