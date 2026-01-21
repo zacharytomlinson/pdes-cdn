@@ -327,6 +327,12 @@ struct UserBrief {
     permission: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+struct AssignedUserView {
+    id: Uuid,
+    email: String,
+}
+
 #[derive(Debug, Clone, FromRow, serde::Serialize)]
 struct ApiTokenRow {
     id: Uuid,
@@ -360,6 +366,15 @@ struct AppManageView {
     latest_fw_version: Option<String>,
     latest_fw_channel: Option<String>,
     assignment_count: i64,
+    #[sqlx(skip)]
+    #[serde(default)]
+    icon_url: Option<String>,
+    #[sqlx(skip)]
+    #[serde(default)]
+    icon_text: String,
+    #[sqlx(skip)]
+    #[serde(default)]
+    assigned_users: Vec<AssignedUserView>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -393,7 +408,7 @@ struct UserAssignmentsView {
     apps: Vec<UserAppView>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, FromRow, serde::Serialize)]
 struct UserAppView {
     slug: String,
     name: String,
@@ -522,7 +537,11 @@ async fn main() -> AppResult<()> {
         .route("/apps", get(list_assigned_apps))
         .route("/apps/manage", get(apps_manage))
         .route("/apps/create", post(create_app))
+        .route("/apps/assign", post(assign_app_generic))
         .route("/apps/:slug/assign", post(assign_app))
+        .route("/apps/:slug/unassign", post(unassign_app))
+        .route("/apps/:slug/update", post(update_app))
+        .route("/apps/:slug/delete", post(delete_app))
         .route("/apps/:slug/download/bootstrap", get(download_bootstrap))
         .route("/apps/:slug/download", get(download_latest_pkg))
         .route("/apps/:slug/icon", get(app_icon))
@@ -835,7 +854,8 @@ async fn portal(State(state): State<AppState>, jar: SignedCookieJar) -> AppResul
         return Ok((jar, Redirect::to("/apps")).into_response());
     }
 
-    let response = render_apps_manage_with_toast(&state, &user, None, None, None).await?;
+    let response =
+        render_apps_manage_with_toast(&state, &user, None, None, None, None, None, None).await?;
     Ok((jar, response).into_response())
 }
 
@@ -1285,9 +1305,17 @@ async fn invite_user(
 
     let email = form.email.trim().to_lowercase();
     if email.is_empty() {
-        let response =
-            render_apps_manage_with_toast(&state, &user, Some("Email is required"), None, None)
-                .await?;
+        let response = render_apps_manage_with_toast(
+            &state,
+            &user,
+            Some("Email is required"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await?;
         return Ok((jar, response).into_response());
     }
 
@@ -1296,9 +1324,17 @@ async fn invite_user(
         .fetch_optional(&state.pool)
         .await?;
     if existing.is_some() {
-        let response =
-            render_apps_manage_with_toast(&state, &user, Some("User already exists"), None, None)
-                .await?;
+        let response = render_apps_manage_with_toast(
+            &state,
+            &user,
+            Some("User already exists"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await?;
         return Ok((jar, response).into_response());
     }
 
@@ -1349,8 +1385,17 @@ async fn invite_user(
     let _ = send_email(&email, subject, &body, Some(body_html)).await;
 
     let toast = format!("Invited {}.", email);
-    let response =
-        render_apps_manage_with_toast(&state, &user, None, Some(&toast), Some(&email)).await?;
+    let response = render_apps_manage_with_toast(
+        &state,
+        &user,
+        None,
+        Some(&toast),
+        Some(&email),
+        None,
+        None,
+        None,
+    )
+    .await?;
     Ok((jar, response).into_response())
 }
 
@@ -1502,7 +1547,11 @@ async fn list_assigned_apps(
     Ok((jar, html).into_response())
 }
 
-async fn apps_manage(State(state): State<AppState>, jar: SignedCookieJar) -> AppResult<Response> {
+async fn apps_manage(
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Query(query): Query<HashMap<String, String>>,
+) -> AppResult<Response> {
     let Some(user) = current_user(&state, &jar).await? else {
         let jar = jar.remove(Cookie::from(SESSION_COOKIE));
         return Ok((jar, Redirect::to("/login")).into_response());
@@ -1514,7 +1563,31 @@ async fn apps_manage(State(state): State<AppState>, jar: SignedCookieJar) -> App
         ));
     }
 
-    let response = render_apps_manage_with_toast(&state, &user, None, None, None).await?;
+    let open_app_slug = query
+        .get("app")
+        .map(|s| sanitize_slug(s))
+        .filter(|s| !s.is_empty());
+    let edit_app_slug = query
+        .get("edit")
+        .map(|s| sanitize_slug(s))
+        .filter(|s| !s.is_empty());
+    let selected_user_id = query
+        .get("user")
+        .and_then(|s| Uuid::parse_str(s.trim()).ok());
+    let toast_success = query.get("toast_success").map(|s| s.as_str());
+    let toast_error = query.get("toast_error").map(|s| s.as_str());
+
+    let response = render_apps_manage_with_toast(
+        &state,
+        &user,
+        toast_error,
+        toast_success,
+        None,
+        open_app_slug,
+        selected_user_id,
+        edit_app_slug,
+    )
+    .await?;
     Ok((jar, response).into_response())
 }
 
@@ -1524,8 +1597,11 @@ async fn render_apps_manage_with_toast(
     toast_error: Option<&str>,
     toast_success: Option<&str>,
     new_invite_email: Option<&str>,
+    open_app_slug: Option<String>,
+    selected_user_id: Option<Uuid>,
+    edit_app_slug: Option<String>,
 ) -> AppResult<Response> {
-    let apps = sqlx::query_as::<_, AppManageView>(
+    let mut apps = sqlx::query_as::<_, AppManageView>(
         r#"
         select
             a.slug as slug,
@@ -1563,6 +1639,39 @@ async fn render_apps_manage_with_toast(
     )
     .fetch_all(&state.pool)
     .await?;
+
+    let assigned_rows = sqlx::query_as::<_, (String, Uuid, String)>(
+        r#"
+        select a.slug, u.id, u.email
+        from apps a
+        join app_assignments aa on aa.app_id = a.id
+        join users u on u.id = aa.user_id
+        order by a.created_at desc, u.email
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let mut assigned_map: std::collections::BTreeMap<String, Vec<AssignedUserView>> =
+        std::collections::BTreeMap::new();
+    for (app_slug, user_id, email) in assigned_rows {
+        assigned_map
+            .entry(app_slug)
+            .or_default()
+            .push(AssignedUserView { id: user_id, email });
+    }
+
+    for app in &mut apps {
+        app.icon_url = app
+            .icon_file_id
+            .map(|id| format!("/apps/{}/icon?v={}", app.slug, id));
+        app.icon_text = app
+            .name
+            .chars()
+            .next()
+            .map(|c| c.to_ascii_uppercase().to_string())
+            .unwrap_or_else(|| "?".to_string());
+        app.assigned_users = assigned_map.remove(&app.slug).unwrap_or_default();
+    }
 
     let users =
         sqlx::query_as::<_, UserBrief>("select id, email, permission from users order by email")
@@ -1611,12 +1720,39 @@ async fn render_apps_manage_with_toast(
         });
     }
 
+    let edit_app = edit_app_slug
+        .as_deref()
+        .and_then(|slug| apps.iter().find(|a| a.slug == slug))
+        .cloned();
+
+    let selected_user = selected_user_id.and_then(|id| users.iter().find(|u| u.id == id).cloned());
+    let selected_user_apps = if let Some(selected_user) = &selected_user {
+        sqlx::query_as::<_, UserAppView>(
+            r#"
+            select a.slug as slug, a.name as name
+            from apps a
+            join app_assignments aa on aa.app_id = a.id
+            where aa.user_id = $1
+            order by a.name
+            "#,
+        )
+        .bind(selected_user.id)
+        .fetch_all(&state.pool)
+        .await?
+    } else {
+        Vec::new()
+    };
+
     let mut ctx = TeraContext::new();
     ctx.insert("user_email", &user.email);
     ctx.insert("apps", &apps);
     ctx.insert("users", &users);
     ctx.insert("org_assignments", &org_assignments);
     ctx.insert("can_write", &true);
+    ctx.insert("open_app_slug", &open_app_slug);
+    ctx.insert("edit_app", &edit_app);
+    ctx.insert("selected_user", &selected_user);
+    ctx.insert("selected_user_apps", &selected_user_apps);
     if let Some(message) = toast_error {
         ctx.insert("toast_error", message);
     }
@@ -1717,7 +1853,290 @@ async fn assign_app(
     .execute(&state.pool)
     .await?;
 
-    Ok((jar, Redirect::to("/apps/manage")).into_response())
+    let return_to = safe_return_to(form.get("return_to").map(|s| s.as_str()));
+    let return_to = add_query_param(&return_to, "toast_success", "Assigned.");
+    Ok((jar, Redirect::to(&return_to)).into_response())
+}
+
+async fn assign_app_generic(
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Form(form): Form<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+
+    let slug = form
+        .get("slug")
+        .map(|s| sanitize_slug(s))
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Select an app"))?;
+    let user_id = form
+        .get("user_id")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Select a user"))?;
+    let user_id = Uuid::parse_str(user_id)
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid user id"))?;
+
+    let app_id: Uuid = sqlx::query_scalar("select id from apps where slug = $1")
+        .bind(&slug)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "App not found"))?;
+
+    sqlx::query(
+        "insert into app_assignments (app_id, user_id) values ($1, $2) on conflict do nothing",
+    )
+    .bind(app_id)
+    .bind(user_id)
+    .execute(&state.pool)
+    .await?;
+
+    let return_to = safe_return_to(form.get("return_to").map(|s| s.as_str()));
+    let return_to = add_query_param(&return_to, "toast_success", "Assigned.");
+    Ok((jar, Redirect::to(&return_to)).into_response())
+}
+
+async fn unassign_app(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Form(form): Form<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+
+    let slug = sanitize_slug(&slug);
+    let user_id = form
+        .get("user_id")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Select a user"))?;
+    let user_id = Uuid::parse_str(user_id)
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid user id"))?;
+
+    let app_id: Uuid = sqlx::query_scalar("select id from apps where slug = $1")
+        .bind(&slug)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "App not found"))?;
+
+    sqlx::query("delete from app_assignments where app_id = $1 and user_id = $2")
+        .bind(app_id)
+        .bind(user_id)
+        .execute(&state.pool)
+        .await?;
+
+    let return_to = safe_return_to(form.get("return_to").map(|s| s.as_str()));
+    let return_to = add_query_param(&return_to, "toast_success", "Revoked.");
+    Ok((jar, Redirect::to(&return_to)).into_response())
+}
+
+async fn update_app(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    mut multipart: Multipart,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+
+    let slug = sanitize_slug(&slug);
+    let app_id: Uuid = sqlx::query_scalar("select id from apps where slug = $1")
+        .bind(&slug)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "App not found"))?;
+
+    let mut name: Option<String> = None;
+    let mut description: Option<String> = None;
+    let mut icon_file_id: Option<Uuid> = None;
+    let mut return_to: Option<String> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid upload payload"))?
+    {
+        match field.name() {
+            Some("name") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid name"))?;
+                let v = v.trim();
+                if v.is_empty() {
+                    return Err(AppError::new(StatusCode::BAD_REQUEST, "Name is required"));
+                }
+                name = Some(v.to_string());
+            }
+            Some("description") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid description"))?;
+                let v = v.trim();
+                description = if v.is_empty() {
+                    None
+                } else {
+                    Some(v.to_string())
+                };
+            }
+            Some("icon") => {
+                if field.file_name().is_some() {
+                    let icon_prefix = format!("apps/{}/icon", sanitize_bucket(&slug));
+                    let stored =
+                        save_upload_to_prefix(&state, field, &icon_prefix, &["png", "svg"]).await?;
+                    icon_file_id = Some(stored.id);
+                }
+            }
+            Some("return_to") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid return_to"))?;
+                return_to = Some(v);
+            }
+            _ => {}
+        }
+    }
+
+    let name = name.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Name is required"))?;
+    let description = description;
+
+    sqlx::query("update apps set name = $1, description = $2 where id = $3")
+        .bind(&name)
+        .bind(description)
+        .bind(app_id)
+        .execute(&state.pool)
+        .await?;
+
+    if let Some(icon_file_id) = icon_file_id {
+        let _ = sqlx::query("update apps set icon_file_id = $1 where id = $2")
+            .bind(icon_file_id)
+            .bind(app_id)
+            .execute(&state.pool)
+            .await;
+    }
+
+    state.file_list_cache.invalidate_all();
+    state.file_by_id_cache.invalidate_all();
+
+    let return_to = safe_return_to(return_to.as_deref());
+    let return_to = add_query_param(&return_to, "toast_success", "Saved.");
+    Ok((jar, Redirect::to(&return_to)).into_response())
+}
+
+async fn delete_app(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Form(form): Form<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+
+    let slug = sanitize_slug(&slug);
+    let confirm = form.get("confirm_slug").map(|s| s.trim()).unwrap_or("");
+    if confirm != slug {
+        let response = render_apps_manage_with_toast(
+            &state,
+            &user,
+            Some("Type the app slug to confirm deletion."),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await?;
+        return Ok((jar, response).into_response());
+    }
+
+    let deleted: Option<Uuid> = sqlx::query_scalar("delete from apps where slug = $1 returning id")
+        .bind(&slug)
+        .fetch_optional(&state.pool)
+        .await?;
+
+    if deleted.is_none() {
+        let response = render_apps_manage_with_toast(
+            &state,
+            &user,
+            Some("App not found."),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await?;
+        return Ok((jar, response).into_response());
+    }
+
+    let prefix = format!("apps/{}", sanitize_bucket(&slug));
+    let files = sqlx::query_as::<_, CachedFile>(
+        "select id, filename, local_path, size_bytes, created_at from cached_files where local_path like $1 || '/%'",
+    )
+    .bind(&prefix)
+    .fetch_all(&state.pool)
+    .await?;
+
+    for file in files {
+        if let Some(path) = resolve_cache_path(&state, &file.local_path).await? {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        let _ = sqlx::query("delete from cached_files where id = $1")
+            .bind(file.id)
+            .execute(&state.pool)
+            .await;
+    }
+
+    let app_dir = state.cache_dir.join(&prefix);
+    if app_dir.starts_with(&state.cache_dir) {
+        let _ = tokio::fs::remove_dir_all(&app_dir).await;
+    }
+
+    state.file_list_cache.invalidate_all();
+    state.file_by_id_cache.invalidate_all();
+
+    let toast = format!("Deleted app {}.", slug);
+    let response =
+        render_apps_manage_with_toast(&state, &user, None, Some(&toast), None, None, None, None)
+            .await?;
+    Ok((jar, response).into_response())
 }
 
 async fn download_latest_pkg(
@@ -2140,6 +2559,7 @@ async fn upload_app_package(
     let mut os: Option<String> = None;
     let mut arch: Option<String> = None;
     let mut uploaded: Option<(Uuid, String)> = None;
+    let mut return_to: Option<String> = None;
 
     while let Some(field) = multipart
         .next_field()
@@ -2192,7 +2612,13 @@ async fn upload_app_package(
                 );
                 let result = save_upload_to_prefix(&state, field, &prefix, &["pkg"]).await?;
                 uploaded = Some((result.id, result.sha256));
-                break;
+            }
+            Some("return_to") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid return_to"))?;
+                return_to = Some(v);
             }
             _ => {}
         }
@@ -2227,7 +2653,9 @@ async fn upload_app_package(
 
     state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
-    Ok((jar, Redirect::to("/apps/manage")).into_response())
+    let return_to = safe_return_to(return_to.as_deref());
+    let return_to = add_query_param(&return_to, "toast_success", "Uploaded package.");
+    Ok((jar, Redirect::to(&return_to)).into_response())
 }
 
 async fn build_app_package(
@@ -2264,6 +2692,7 @@ async fn build_app_package(
     let mut installer: Option<(String, Vec<u8>)> = None;
     let mut icon: Option<(String, Vec<u8>)> = None;
     let mut docs: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut return_to: Option<String> = None;
 
     while let Some(field) = multipart
         .next_field()
@@ -2375,6 +2804,13 @@ async fn build_app_package(
                 if !bytes.is_empty() {
                     docs.push((filename, bytes.to_vec()));
                 }
+            }
+            Some("return_to") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid return_to"))?;
+                return_to = Some(v);
             }
             _ => {}
         }
@@ -2503,7 +2939,9 @@ async fn build_app_package(
     let _ = tokio::fs::remove_file(&pkg_out).await;
     state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
-    Ok((jar, Redirect::to("/apps/manage")).into_response())
+    let return_to = safe_return_to(return_to.as_deref());
+    let return_to = add_query_param(&return_to, "toast_success", "Built package.");
+    Ok((jar, Redirect::to(&return_to)).into_response())
 }
 
 async fn upload_firmware(
@@ -2533,6 +2971,7 @@ async fn upload_firmware(
     let mut version: Option<String> = None;
     let mut channel: String = "stable".to_string();
     let mut uploaded: Option<(Uuid, String)> = None;
+    let mut return_to: Option<String> = None;
 
     while let Some(field) = multipart
         .next_field()
@@ -2576,7 +3015,13 @@ async fn upload_firmware(
                 );
                 let result = save_upload_to_prefix(&state, field, &prefix, &["bin", "elf"]).await?;
                 uploaded = Some((result.id, result.sha256));
-                break;
+            }
+            Some("return_to") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid return_to"))?;
+                return_to = Some(v);
             }
             _ => {}
         }
@@ -2608,7 +3053,9 @@ async fn upload_firmware(
 
     state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
-    Ok((jar, Redirect::to("/apps/manage")).into_response())
+    let return_to = safe_return_to(return_to.as_deref());
+    let return_to = add_query_param(&return_to, "toast_success", "Uploaded firmware.");
+    Ok((jar, Redirect::to(&return_to)).into_response())
 }
 
 async fn list_tokens(State(state): State<AppState>, jar: SignedCookieJar) -> AppResult<Response> {
@@ -3419,6 +3866,36 @@ fn parse_target_query(query: &HashMap<String, String>) -> Option<(String, String
         .unwrap_or("x86_64");
     let arch = normalize_arch(arch).ok()?;
     Some((os, arch))
+}
+
+fn safe_return_to(return_to: Option<&str>) -> String {
+    let Some(value) = return_to.map(|s| s.trim()).filter(|s| !s.is_empty()) else {
+        return "/apps/manage".to_string();
+    };
+    if value.starts_with("/apps/manage") {
+        value.to_string()
+    } else {
+        "/apps/manage".to_string()
+    }
+}
+
+fn url_encode_component(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for &b in value.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+fn add_query_param(url: &str, key: &str, value: &str) -> String {
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}{key}={}", url_encode_component(value.trim()))
 }
 
 fn detect_target_from_user_agent(headers: &HeaderMap) -> Option<(String, String)> {
