@@ -31,7 +31,6 @@ use tera::{Context as TeraContext, Tera};
 use tower_http::trace::TraceLayer;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
 use tokio_util::io::ReaderStream;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -2167,31 +2166,10 @@ async fn build_app_package(
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not write manifest: {}", e)))?;
 
     let pkg_filename = sanitize_filename(&format!("{}-{}-{}-{}.pkg", slug, version, os, arch));
-    // Important: write the archive outside the directory being archived, otherwise tar may try to
-    // include the output file and fail with "file changed as we read it".
-    let pkg_out = std::env::temp_dir().join(format!("pdes-cdn-built-{}", Uuid::new_v4()));
-
-    let output = Command::new("tar")
-        .arg("-czf")
-        .arg(&pkg_out)
-        .arg("-C")
-        .arg(&work_dir)
-        .arg(".")
-        .output()
+    let pkg_out = std::env::temp_dir().join(format!("pdes-cdn-built-{}.pkg", Uuid::new_v4()));
+    build_tar_gz(&work_dir, &pkg_out)
         .await
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to run tar: {}", e)))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr = stderr.trim();
-        let message = if stderr.is_empty() {
-            "Failed to build .pkg (tar exited non-zero)".to_string()
-        } else {
-            format!("Failed to build .pkg: {}", stderr)
-        };
-        let _ = tokio::fs::remove_dir_all(&work_dir).await;
-        let _ = tokio::fs::remove_file(&pkg_out).await;
-        return Err(AppError::new(StatusCode::INTERNAL_SERVER_ERROR, message));
-    }
+        .map_err(|message| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, message))?;
 
     let prefix = format!(
         "apps/{}/packages/{}/{}/{}",
@@ -2714,6 +2692,32 @@ async fn store_local_file_as_cached(
     .await?;
 
     Ok(UploadResult { id: file_id, sha256 })
+}
+
+async fn build_tar_gz(src_dir: &std::path::Path, dest_file: &std::path::Path) -> Result<(), String> {
+    let src_dir = src_dir.to_path_buf();
+    let dest_file = dest_file.to_path_buf();
+
+    tokio::task::spawn_blocking(move || {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::fs::File as StdFile;
+        let out = StdFile::create(&dest_file)
+            .map_err(|e| format!("Could not create archive {}: {}", dest_file.display(), e))?;
+        let enc = GzEncoder::new(out, Compression::default());
+        let mut tar_builder = tar::Builder::new(enc);
+        tar_builder
+            .append_dir_all(".", &src_dir)
+            .map_err(|e| format!("Failed to archive {}: {}", src_dir.display(), e))?;
+        let enc = tar_builder
+            .into_inner()
+            .map_err(|e| format!("Failed finalizing tar: {}", e))?;
+        enc.finish()
+            .map_err(|e| format!("Failed finalizing gzip: {}", e))?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| format!("Failed building archive: {}", e))?
 }
 
 async fn save_upload_to_prefix(
