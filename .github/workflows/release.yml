@@ -180,6 +180,41 @@ jobs:
           echo "TARGET_TRIPLE=$target" >> "$GITHUB_ENV"
           echo "BIN_PATH=artifacts/pdes-cdn-$target" >> "$GITHUB_ENV"
 
+      - name: Run DB migrations
+        run: |
+          set -euo pipefail
+          mig_dir="$(readlink -f "${GITHUB_WORKSPACE}/migrations")"
+          env_file="/etc/${SERVICE_NAME:-pdes-cdn}.env"
+          if [[ ! -f "$env_file" && -f /etc/pdes-cdn.env ]]; then
+            env_file="/etc/pdes-cdn.env"
+          fi
+          if [[ ! -f "$env_file" ]]; then
+            echo "Missing env file: ${env_file}" >&2
+            exit 1
+          fi
+          if ! command -v psql >/dev/null 2>&1; then
+            echo "Missing required command: psql" >&2
+            exit 1
+          fi
+          if [[ "$(id -u)" -eq 0 ]]; then
+            # shellcheck disable=SC1090
+            source "$env_file"
+            : "${DATABASE_URL:?DATABASE_URL not set in env file}"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "${mig_dir}/0005_app_store.sql"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "${mig_dir}/0006_app_packages_platform.sql"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "${mig_dir}/0007_api_tokens.sql"
+          else
+            sudo -n env MIG_DIR="$mig_dir" ENV_FILE="$env_file" bash -lc '
+              set -euo pipefail
+              # shellcheck disable=SC1090
+              source "$ENV_FILE"
+              : "${DATABASE_URL:?DATABASE_URL not set in env file}"
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "${MIG_DIR}/0005_app_store.sql"
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "${MIG_DIR}/0006_app_packages_platform.sql"
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "${MIG_DIR}/0007_api_tokens.sql"
+            '
+          fi
+
       - name: Deploy on node (requires passwordless sudo)
         run: |
           set -euo pipefail
@@ -189,14 +224,16 @@ jobs:
               --app-dir "${APP_DIR:-/opt/pdes-cdn}" \
               --service "${SERVICE_NAME:-pdes-cdn}" \
               --bin "${BIN_PATH}" \
-              --templates "templates"
+              --templates "templates" \
+              --skip-migrations
             exit 0
           fi
           sudo -n /usr/bin/bash "$script_path" \
             --app-dir "${APP_DIR:-/opt/pdes-cdn}" \
             --service "${SERVICE_NAME:-pdes-cdn}" \
             --bin "${BIN_PATH}" \
-            --templates "templates"
+            --templates "templates" \
+            --skip-migrations
 
   deploy_manual:
     name: Deploy Tag (manual)

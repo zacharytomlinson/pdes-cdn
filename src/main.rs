@@ -31,6 +31,7 @@ use tera::{Context as TeraContext, Tera};
 use tower_http::trace::TraceLayer;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
 use tokio_util::io::ReaderStream;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -502,6 +503,7 @@ async fn main() -> AppResult<()> {
             get(download_latest_firmware),
         )
         .route("/apps/:slug/package/upload", post(upload_app_package))
+        .route("/apps/:slug/package/build", post(build_app_package))
         .route("/apps/:slug/firmware/upload", post(upload_firmware))
         .route("/tokens", get(list_tokens).post(create_token))
         .route("/tokens/:id/revoke", post(revoke_token))
@@ -802,23 +804,8 @@ async fn portal(State(state): State<AppState>, jar: SignedCookieJar) -> AppResul
         return Ok((jar, Redirect::to("/apps")).into_response());
     }
 
-    let buckets = if is_writer(&user) {
-        fetch_buckets(&state).await?
-    } else {
-        Vec::new()
-    };
-
-    let mut ctx = TeraContext::new();
-    ctx.insert("user_email", &user.email);
-    ctx.insert("files_endpoint", "/files");
-    ctx.insert(
-        "cache_summary_endpoint",
-        "/cache-summary",
-    );
-    ctx.insert("can_write", &is_writer(&user));
-    ctx.insert("buckets", &buckets);
-    let html = render_template(&state, "portal.html", ctx)?;
-    Ok(html.into_response())
+    let response = render_apps_manage_with_toast(&state, &user, None, None, None).await?;
+    Ok((jar, response).into_response())
 }
 
 async fn render_portal_with_toast(
@@ -921,22 +908,11 @@ async fn list_files(
         ctx.insert("buckets", &buckets);
     }
 
-    let html = if hx {
-        render_template(&state, "partials/file_table.html", ctx)?
-    } else {
-        let buckets = if is_writer(&user) {
-            fetch_buckets(&state).await?
-        } else {
-            Vec::new()
-        };
-        ctx.insert("user_email", &user.email);
-        ctx.insert("files_endpoint", "/files");
-        ctx.insert("cache_summary_endpoint", "/cache-summary");
-        ctx.insert("can_write", &is_writer(&user));
-        ctx.insert("buckets", &buckets);
-        render_template(&state, "portal.html", ctx)?
-    };
+    if !hx {
+        return Ok((jar, Redirect::to("/portal")).into_response());
+    }
 
+    let html = render_template(&state, "partials/file_table.html", ctx)?;
     Ok((jar, html).into_response())
 }
 
@@ -994,22 +970,11 @@ async fn cache_summary(
         ctx.insert("bucket_tree", &bucket_tree);
     }
 
-    let html = if is_hx_request(&headers) {
-        render_template(&state, "partials/cache_summary.html", ctx)?
-    } else {
-        let buckets = if is_writer(&user) {
-            fetch_buckets(&state).await?
-        } else {
-            Vec::new()
-        };
-        ctx.insert("user_email", &user.email);
-        ctx.insert("files_endpoint", "/files");
-        ctx.insert("cache_summary_endpoint", "/cache-summary");
-        ctx.insert("can_write", &is_writer(&user));
-        ctx.insert("buckets", &buckets);
-        render_template(&state, "portal.html", ctx)?
-    };
+    if !is_hx_request(&headers) {
+        return Ok((jar, Redirect::to("/portal")).into_response());
+    }
 
+    let html = render_template(&state, "partials/cache_summary.html", ctx)?;
     Ok((jar, html).into_response())
 }
 
@@ -1278,7 +1243,10 @@ async fn invite_user(
 
     let email = form.email.trim().to_lowercase();
     if email.is_empty() {
-        return render_portal_with_toast(&state, &user, Some("Email is required"), None).await;
+        let response =
+            render_apps_manage_with_toast(&state, &user, Some("Email is required"), None, None)
+                .await?;
+        return Ok((jar, response).into_response());
     }
 
     let existing = sqlx::query_scalar::<_, Uuid>("select id from users where email = $1")
@@ -1286,7 +1254,10 @@ async fn invite_user(
         .fetch_optional(&state.pool)
         .await?;
     if existing.is_some() {
-        return render_portal_with_toast(&state, &user, Some("User already exists"), None).await;
+        let response =
+            render_apps_manage_with_toast(&state, &user, Some("User already exists"), None, None)
+                .await?;
+        return Ok((jar, response).into_response());
     }
 
     let placeholder: String = rand::thread_rng()
@@ -1331,17 +1302,10 @@ async fn invite_user(
     let subject = "Your CDN portal access";
     let _ = send_email(&email, subject, &body, Some(body_html)).await;
 
-    let buckets = fetch_buckets(&state).await?;
-    let mut ctx = TeraContext::new();
-    ctx.insert("user_email", &user.email);
-    ctx.insert("files_endpoint", "/files");
-    ctx.insert("cache_summary_endpoint", "/cache-summary");
-    ctx.insert("can_write", &true);
-    ctx.insert("buckets", &buckets);
-    ctx.insert("new_invite_email", &email);
-    ctx.insert("toast_success", &format!("Invited {}.", email));
-    let html = render_template(&state, "portal.html", ctx)?;
-    Ok((jar, html).into_response())
+    let toast = format!("Invited {}.", email);
+    let response =
+        render_apps_manage_with_toast(&state, &user, None, Some(&toast), Some(&email)).await?;
+    Ok((jar, response).into_response())
 }
 
 async fn download_file(
@@ -1501,6 +1465,17 @@ async fn apps_manage(State(state): State<AppState>, jar: SignedCookieJar) -> App
         ));
     }
 
+    let response = render_apps_manage_with_toast(&state, &user, None, None, None).await?;
+    Ok((jar, response).into_response())
+}
+
+async fn render_apps_manage_with_toast(
+    state: &AppState,
+    user: &User,
+    toast_error: Option<&str>,
+    toast_success: Option<&str>,
+    new_invite_email: Option<&str>,
+) -> AppResult<Response> {
     let apps = sqlx::query_as::<_, AppManageView>(
         r#"
         select
@@ -1548,8 +1523,17 @@ async fn apps_manage(State(state): State<AppState>, jar: SignedCookieJar) -> App
     ctx.insert("apps", &apps);
     ctx.insert("users", &users);
     ctx.insert("can_write", &true);
-    let html = render_template(&state, "apps_manage.html", ctx)?;
-    Ok((jar, html).into_response())
+    if let Some(message) = toast_error {
+        ctx.insert("toast_error", message);
+    }
+    if let Some(message) = toast_success {
+        ctx.insert("toast_success", message);
+    }
+    if let Some(email) = new_invite_email {
+        ctx.insert("new_invite_email", email);
+    }
+    let html = render_template(state, "apps_manage.html", ctx)?;
+    Ok(html.into_response())
 }
 
 async fn create_app(
@@ -1979,6 +1963,262 @@ async fn upload_app_package(
     Ok((jar, Redirect::to("/apps/manage")).into_response())
 }
 
+async fn build_app_package(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    mut multipart: Multipart,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+
+    let slug = sanitize_slug(&slug);
+    let app: (Uuid, String, Option<String>) =
+        sqlx::query_as("select id, name, description from apps where slug = $1")
+            .bind(&slug)
+            .fetch_optional(&state.pool)
+            .await?
+            .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "App not found"))?;
+    let (app_id, app_name, app_description) = app;
+
+    let mut version: Option<String> = None;
+    let mut os: Option<String> = None;
+    let mut arch: Option<String> = None;
+    let mut display_name: Option<String> = None;
+    let mut summary: Option<String> = None;
+    let mut installer: Option<(String, Vec<u8>)> = None;
+    let mut icon: Option<(String, Vec<u8>)> = None;
+    let mut docs: Vec<(String, Vec<u8>)> = Vec::new();
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid upload payload"))?
+    {
+        match field.name() {
+            Some("version") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid version"))?;
+                let v = v.trim();
+                if v.is_empty() {
+                    return Err(AppError::new(StatusCode::BAD_REQUEST, "Version is required"));
+                }
+                version = Some(v.to_string());
+            }
+            Some("os") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid os"))?;
+                os = Some(normalize_os(v.trim())?);
+            }
+            Some("arch") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid arch"))?;
+                arch = Some(normalize_arch(v.trim())?);
+            }
+            Some("display_name") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid display name"))?;
+                let v = v.trim();
+                if !v.is_empty() {
+                    display_name = Some(v.to_string());
+                }
+            }
+            Some("summary") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid summary"))?;
+                let v = v.trim();
+                if !v.is_empty() {
+                    summary = Some(v.to_string());
+                }
+            }
+            Some("installer") => {
+                let filename = field
+                    .file_name()
+                    .map(|s| sanitize_filename(s))
+                    .unwrap_or_else(|| "installer.bin".to_string());
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Failed reading installer"))?;
+                let ext = std::path::Path::new(&filename)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let allowed = ["msi", "deb", "rpm", "exe", "dmg", "pkg", "zip", "tar", "gz"];
+                if !allowed.iter().any(|a| a.eq_ignore_ascii_case(&ext)) {
+                    return Err(AppError::new(
+                        StatusCode::BAD_REQUEST,
+                        "Installer must be .msi, .deb, .rpm, .exe, .dmg, .pkg, .zip, or .tar/.gz",
+                    ));
+                }
+                installer = Some((filename, bytes.to_vec()));
+            }
+            Some("icon") => {
+                let filename = field
+                    .file_name()
+                    .map(|s| sanitize_filename(s))
+                    .unwrap_or_else(|| "icon.png".to_string());
+                let ext = std::path::Path::new(&filename)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if ext != "png" && ext != "svg" {
+                    return Err(AppError::new(
+                        StatusCode::BAD_REQUEST,
+                        "Icon must be .png or .svg",
+                    ));
+                }
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Failed reading icon"))?;
+                icon = Some((filename, bytes.to_vec()));
+            }
+            Some("docs") => {
+                let filename = field
+                    .file_name()
+                    .map(|s| sanitize_filename(s))
+                    .unwrap_or_else(|| "doc.txt".to_string());
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Failed reading docs"))?;
+                if !bytes.is_empty() {
+                    docs.push((filename, bytes.to_vec()));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let version = version.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Version is required"))?;
+    let os = os.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "OS is required"))?;
+    let arch = arch.unwrap_or_else(|| "x86_64".to_string());
+    let (installer_name, installer_bytes) =
+        installer.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Installer is required"))?;
+    let (icon_name, icon_bytes) =
+        icon.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Icon is required"))?;
+
+    let display_name = display_name.unwrap_or_else(|| app_name.clone());
+    let summary = summary
+        .or(app_description)
+        .unwrap_or_else(|| "Companion app installer".to_string());
+
+    let work_dir = std::env::temp_dir().join(format!("pdes-cdn-pkg-{}", Uuid::new_v4()));
+    tokio::fs::create_dir_all(work_dir.join("installers"))
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not create temp directory: {}", e)))?;
+    tokio::fs::create_dir_all(work_dir.join("docs")).await.ok();
+
+    let installer_path = work_dir.join("installers").join(&installer_name);
+    tokio::fs::write(&installer_path, &installer_bytes)
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not write installer: {}", e)))?;
+    let icon_path = work_dir.join(&icon_name);
+    tokio::fs::write(&icon_path, &icon_bytes)
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not write icon: {}", e)))?;
+    for (doc_name, doc_bytes) in &docs {
+        let path = work_dir.join("docs").join(doc_name);
+        let _ = tokio::fs::write(&path, doc_bytes).await;
+    }
+
+    let installer_type = std::path::Path::new(&installer_name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let icon_path_in_pkg = icon_name.clone();
+
+    let manifest = serde_json::json!({
+        "schema_version": 1,
+        "app_slug": &slug,
+        "app_version": &version,
+        "platform": { "os": &os, "arch": &arch },
+        "display_name": &display_name,
+        "summary": &summary,
+        "icon": { "path": icon_path_in_pkg },
+        "installer": { "type": installer_type, "path": format!("installers/{}", installer_name) },
+        "firmware": { "channel": "stable", "latest_url": format!("/apps/{}/firmware/latest?channel=stable", slug) }
+    })
+    .to_string();
+    tokio::fs::write(work_dir.join("manifest.json"), manifest)
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not write manifest: {}", e)))?;
+
+    let pkg_filename = sanitize_filename(&format!("{}-{}-{}-{}.pkg", slug, version, os, arch));
+    let pkg_out = work_dir.join(&pkg_filename);
+
+    let status = Command::new("tar")
+        .arg("-czf")
+        .arg(&pkg_out)
+        .arg("-C")
+        .arg(&work_dir)
+        .arg(".")
+        .status()
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to run tar: {}", e)))?;
+    if !status.success() {
+        return Err(AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to build .pkg (tar exited non-zero)",
+        ));
+    }
+
+    let prefix = format!(
+        "apps/{}/packages/{}/{}/{}",
+        sanitize_bucket(&slug),
+        sanitize_bucket(&os),
+        sanitize_bucket(&arch),
+        sanitize_bucket(&version)
+    );
+    let stored = store_local_file_as_cached(&state, &pkg_out, &pkg_filename, &prefix).await?;
+
+    let package_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        insert into app_packages (id, app_id, version, os, arch, pkg_file_id, pkg_sha256)
+        values ($1, $2, $3, $4, $5, $6, $7)
+        on conflict (app_id, version, os, arch)
+        do update set pkg_file_id = excluded.pkg_file_id, pkg_sha256 = excluded.pkg_sha256, created_at = now()
+        "#,
+    )
+    .bind(package_id)
+    .bind(app_id)
+    .bind(&version)
+    .bind(&os)
+    .bind(&arch)
+    .bind(stored.id)
+    .bind(&stored.sha256)
+    .execute(&state.pool)
+    .await?;
+
+    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+    state.file_list_cache.invalidate_all();
+    state.file_by_id_cache.invalidate_all();
+    Ok((jar, Redirect::to("/apps/manage")).into_response())
+}
+
 async fn upload_firmware(
     Path(slug): Path<String>,
     State(state): State<AppState>,
@@ -2402,6 +2642,69 @@ async fn api_download_package(
 struct UploadResult {
     id: Uuid,
     sha256: String,
+}
+
+async fn store_local_file_as_cached(
+    state: &AppState,
+    source_path: &std::path::Path,
+    original_filename: &str,
+    prefix: &str,
+) -> AppResult<UploadResult> {
+    let clean = sanitize_filename(original_filename);
+    let file_id = Uuid::new_v4();
+    let stored_name = format!("{}-{}", file_id, clean);
+    let relative_path = format!("{}/{}", sanitize_bucket(prefix), stored_name);
+    let dest_path = state.cache_dir.join(&relative_path);
+
+    if let Some(parent) = dest_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| {
+                AppError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Could not create directory {}: {}", parent.display(), e),
+                )
+            })?;
+    }
+
+    let mut src = File::open(source_path)
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not open built pkg: {}", e)))?;
+    let mut dest = File::create(&dest_path)
+        .await
+        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not create file {}: {}", dest_path.display(), e)))?;
+
+    let mut size: i64 = 0;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        use tokio::io::AsyncReadExt;
+        let n = src
+            .read(&mut buf)
+            .await
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not read built pkg: {}", e)))?;
+        if n == 0 {
+            break;
+        }
+        size += n as i64;
+        hasher.update(&buf[..n]);
+        dest.write_all(&buf[..n])
+            .await
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not write built pkg: {}", e)))?;
+    }
+    let sha256 = to_hex(&hasher.finalize());
+
+    sqlx::query(
+        "insert into cached_files (id, filename, local_path, size_bytes) values ($1, $2, $3, $4)",
+    )
+    .bind(file_id)
+    .bind(clean)
+    .bind(relative_path)
+    .bind(size)
+    .execute(&state.pool)
+    .await?;
+
+    Ok(UploadResult { id: file_id, sha256 })
 }
 
 async fn save_upload_to_prefix(
