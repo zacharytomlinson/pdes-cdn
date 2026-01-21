@@ -31,7 +31,8 @@ fn main() {
         println!("cargo:rustc-env=APP_NAME={}", name);
     }
 
-    let build = env_trimmed("APP_BUILD").or_else(|| run_git(&["describe", "--tags", "--exact-match"]));
+    let build =
+        env_trimmed("APP_BUILD").or_else(|| run_git(&["describe", "--tags", "--exact-match"]));
     if let Some(build) = build {
         println!("cargo:rustc-env=APP_BUILD={}", build);
     }

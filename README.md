@@ -117,6 +117,48 @@ curl -fS \
   https://cdn.example.com/api/upload
 ```
 
+## Desktop app update API (packages + firmware)
+
+This node can serve desktop app installers and firmware artifacts, with a bearer-token API for checking the latest versions and downloading them.
+
+1. Create an API token in the portal at `GET /tokens` (token is shown once).
+2. Use it on API requests: `Authorization: Bearer <token>`.
+
+### Package (installer) updates
+
+- Latest metadata: `GET /api/apps/<slug>/package/latest?os=windows&arch=x86_64`
+  - Response JSON example:
+    ```json
+    {
+      "app_slug": "my-app",
+      "os": "windows",
+      "arch": "x86_64",
+      "version": "1.2.3",
+      "pkg_sha256": "…",
+      "download_url": "/api/apps/my-app/package/download?os=windows&arch=x86_64"
+    }
+    ```
+  - Latest version field: `version`
+  - Download URL field: `download_url`
+- Download file (stream): `GET /api/apps/<slug>/package/download?os=windows&arch=x86_64[&version=1.2.3]`
+
+### Firmware updates
+
+- Latest metadata: `GET /api/apps/<slug>/firmware/latest?channel=stable`
+  - Response JSON example:
+    ```json
+    {
+      "app_slug": "my-app",
+      "channel": "stable",
+      "version": "2026.01.21",
+      "sha256": "…",
+      "download_url": "/api/apps/my-app/firmware/download?channel=stable"
+    }
+    ```
+  - Latest version field: `version`
+  - Download URL field: `download_url`
+- Download file (stream): `GET /api/apps/<slug>/firmware/download?channel=stable[&version=2026.01.21]`
+
 ## Troubleshooting
 
 - Env var changes not taking effect: `sudo systemctl restart pdes-cdn`

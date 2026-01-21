@@ -2,36 +2,36 @@ use std::{collections::HashMap, net::SocketAddr, path::PathBuf, time::Duration a
 
 use anyhow::Context;
 use argon2::{
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
 use axum::{
+    Form, Router,
     body::Body,
     extract::{DefaultBodyLimit, FromRef, Multipart, Path, Query, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
-    Form, Router,
 };
-use axum_extra::extract::cookie::{Cookie, Key};
 use axum_extra::extract::SignedCookieJar;
+use axum_extra::extract::cookie::{Cookie, Key};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use dotenvy::dotenv;
 use lettre::{
+    AsyncSmtpTransport, AsyncTransport, Tokio1Executor,
     message::{Mailbox, Message, MultiPart},
     transport::smtp::authentication::Credentials,
-    AsyncSmtpTransport, AsyncTransport, Tokio1Executor,
 };
 use moka::future::Cache;
-use rand::{distributions::Alphanumeric, rngs::OsRng, Rng, RngCore};
+use rand::{Rng, RngCore, distributions::Alphanumeric, rngs::OsRng};
 use serde::Deserialize;
-use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
 use sha2::{Digest, Sha256, Sha512};
+use sqlx::{FromRow, PgPool, postgres::PgPoolOptions};
 use tera::{Context as TeraContext, Tera};
-use tower_http::trace::TraceLayer;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
+use tower_http::trace::TraceLayer;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -426,7 +426,8 @@ async fn main() -> AppResult<()> {
         .compact()
         .init();
 
-    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/pdes_cdn".to_string());
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/pdes_cdn".to_string());
     let cache_dir = std::env::var("CACHE_DIR").unwrap_or_else(|_| "cache".to_string());
     let skip_cache_dir_write_check = std::env::var("CACHE_DIR_SKIP_WRITE_CHECK")
         .ok()
@@ -443,7 +444,9 @@ async fn main() -> AppResult<()> {
             .take(64)
             .map(char::from)
             .collect();
-        warn!("COOKIE_SECRET not set; using an ephemeral random secret (sessions will invalidate on restart)");
+        warn!(
+            "COOKIE_SECRET not set; using an ephemeral random secret (sessions will invalidate on restart)"
+        );
         generated
     } else {
         cookie_secret_env
@@ -541,18 +544,12 @@ async fn main() -> AppResult<()> {
         .route("/invite", axum::routing::post(invite_user))
         .route("/upload", axum::routing::post(upload_file))
         .route("/api/upload", axum::routing::post(api_upload))
-        .route(
-            "/api/apps/:slug/package/latest",
-            get(api_latest_package),
-        )
+        .route("/api/apps/:slug/package/latest", get(api_latest_package))
         .route(
             "/api/apps/:slug/package/download",
             get(api_download_package),
         )
-        .route(
-            "/api/apps/:slug/firmware/latest",
-            get(api_latest_firmware),
-        )
+        .route("/api/apps/:slug/firmware/latest", get(api_latest_firmware))
         .route(
             "/api/apps/:slug/firmware/download",
             get(api_download_firmware),
@@ -676,19 +673,17 @@ async fn do_login(
 
     let Some(user) = user else {
         warn!(email = %form.email, "login failed: user not found");
-        return render_login_error(&state, "Invalid credentials")
-            .map(|html| html.into_response());
+        return render_login_error(&state, "Invalid credentials").map(|html| html.into_response());
     };
 
-    let parsed_hash =
-        PasswordHash::new(&user.password_hash).map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Stored password hash is invalid"))?;
+    let parsed_hash = PasswordHash::new(&user.password_hash)
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Stored password hash is invalid"))?;
     if Argon2::default()
         .verify_password(form.password.as_bytes(), &parsed_hash)
         .is_err()
     {
         warn!(email = %form.email, "login failed: invalid password");
-        return render_login_error(&state, "Invalid credentials")
-            .map(|html| html.into_response());
+        return render_login_error(&state, "Invalid credentials").map(|html| html.into_response());
     }
 
     if user.must_reset {
@@ -727,14 +722,13 @@ async fn do_reset_request(
         .collect();
     let expires = Utc::now() + ChronoDuration::minutes(30);
 
-    let _ = sqlx::query(
-        "update users set reset_token = $1, reset_token_expires = $2 where email = $3",
-    )
-    .bind(&token)
-    .bind(expires)
-    .bind(&form.email)
-    .execute(&state.pool)
-    .await?;
+    let _ =
+        sqlx::query("update users set reset_token = $1, reset_token_expires = $2 where email = $3")
+            .bind(&token)
+            .bind(expires)
+            .bind(&form.email)
+            .execute(&state.pool)
+            .await?;
 
     let base = base_url();
     let reset_link = format!("{}/reset/confirm/{}", base.trim_end_matches('/'), token);
@@ -753,7 +747,10 @@ async fn do_reset_request(
     info!(email = %form.email, token_prefix = %token_preview, "issued reset token and sent reset email");
 
     let mut ctx = TeraContext::new();
-    ctx.insert("message", "If the account exists, a reset link was prepared.");
+    ctx.insert(
+        "message",
+        "If the account exists, a reset link was prepared.",
+    );
     render_template(&state, "reset_request.html", ctx)
 }
 
@@ -1107,7 +1104,10 @@ async fn api_upload(
     mut multipart: Multipart,
 ) -> AppResult<Response> {
     let token = extract_bearer(&headers).ok_or_else(|| {
-        AppError::new_plain(StatusCode::UNAUTHORIZED, "Bearer token required for API upload")
+        AppError::new_plain(
+            StatusCode::UNAUTHORIZED,
+            "Bearer token required for API upload",
+        )
     })?;
     let token_prefix: String = token.chars().take(8).collect();
 
@@ -1115,8 +1115,8 @@ async fn api_upload(
         "select id, project, bucket, token, created_at from project_tokens where token = $1",
     )
     .bind(&token)
-        .fetch_optional(&state.pool)
-        .await?;
+    .fetch_optional(&state.pool)
+    .await?;
 
     let Some(record) = record else {
         warn!(token_prefix = %token_prefix, "api_upload: invalid token");
@@ -1134,7 +1134,11 @@ async fn api_upload(
         .map_err(|_| AppError::new_plain(StatusCode::BAD_REQUEST, "Invalid upload payload"))?
     {
         if field.name() == Some("file") {
-            let bucket_path = format!("{}/{}", sanitize_bucket(&record.project), sanitize_bucket(&record.bucket));
+            let bucket_path = format!(
+                "{}/{}",
+                sanitize_bucket(&record.project),
+                sanitize_bucket(&record.bucket)
+            );
             save_upload(&state, field, Some(bucket_path), Some(record.token.clone())).await?;
             handled = true;
             break;
@@ -1222,7 +1226,11 @@ async fn delete_bucket(
         return render_portal_with_toast(&state, &user, Some("Bucket not found"), None).await;
     };
 
-    let prefix = format!("{}/{}", sanitize_bucket(&record.project), sanitize_bucket(&record.bucket));
+    let prefix = format!(
+        "{}/{}",
+        sanitize_bucket(&record.project),
+        sanitize_bucket(&record.bucket)
+    );
     let files = sqlx::query_as::<_, CachedFile>(
         "select id, filename, local_path, size_bytes, created_at from cached_files where local_path like $1 || '/%'",
     )
@@ -1248,7 +1256,7 @@ async fn delete_bucket(
     sqlx::query("delete from project_tokens where id = $1")
         .bind(record.id)
         .execute(&state.pool)
-    .await?;
+        .await?;
 
     state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
@@ -1319,7 +1327,11 @@ async fn invite_user(
     info!(user_id = %user.id, email = %user.email, invited_email = %email, "created user invite");
 
     let base = base_url();
-    let reset_link = format!("{}/reset/confirm/{}", base.trim_end_matches('/'), reset_token);
+    let reset_link = format!(
+        "{}/reset/confirm/{}",
+        base.trim_end_matches('/'),
+        reset_token
+    );
     let body = format!(
         "Welcome to the CDN portal.\n\nTemporary password: {pwd}\nLogin: {login}\nReset link (required on first login): {link}\n\nIf you did not expect this, please contact support@palodurosystems.io.",
         pwd = placeholder,
@@ -1552,9 +1564,10 @@ async fn render_apps_manage_with_toast(
     .fetch_all(&state.pool)
     .await?;
 
-    let users = sqlx::query_as::<_, UserBrief>("select id, email, permission from users order by email")
-        .fetch_all(&state.pool)
-        .await?;
+    let users =
+        sqlx::query_as::<_, UserBrief>("select id, email, permission from users order by email")
+            .fetch_all(&state.pool)
+            .await?;
 
     let assignments = sqlx::query_as::<_, (String, String, String)>(
         r#"
@@ -1569,8 +1582,10 @@ async fn render_apps_manage_with_toast(
     .fetch_all(&state.pool)
     .await?;
 
-    let mut org_map: std::collections::BTreeMap<String, std::collections::BTreeMap<String, Vec<UserAppView>>> =
-        std::collections::BTreeMap::new();
+    let mut org_map: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<String, Vec<UserAppView>>,
+    > = std::collections::BTreeMap::new();
     for (email, slug, name) in assignments {
         let org = email
             .split('@')
@@ -1590,7 +1605,10 @@ async fn render_apps_manage_with_toast(
             .map(|(email, apps)| UserAssignmentsView { email, apps })
             .collect();
         user_views.sort_by(|a, b| a.email.cmp(&b.email));
-        org_assignments.push(OrgAssignmentsView { org, users: user_views });
+        org_assignments.push(OrgAssignmentsView {
+            org,
+            users: user_views,
+        });
     }
 
     let mut ctx = TeraContext::new();
@@ -1641,7 +1659,10 @@ async fn create_app(
         return Err(AppError::new(StatusCode::BAD_REQUEST, "Invalid app slug"));
     }
     if name.is_empty() {
-        return Err(AppError::new(StatusCode::BAD_REQUEST, "App name is required"));
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "App name is required",
+        ));
     }
 
     let id = Uuid::new_v4();
@@ -1889,10 +1910,7 @@ async fn download_bootstrap(
     let token_name = format!("Bootstrap {} ({}/{})", slug, os, arch);
     let token = mint_api_token_for_user(&state, user.id, &token_name).await?;
 
-    let download_url = format!(
-        "/apps/{}/download?target={}:{}",
-        slug, os, arch
-    );
+    let download_url = format!("/apps/{}/download?target={}:{}", slug, os, arch);
 
     let mut ctx = TeraContext::new();
     ctx.insert("user_email", &user.email);
@@ -2150,7 +2168,10 @@ async fn upload_app_package(
                     .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid version"))?;
                 let v = v.trim();
                 if v.is_empty() {
-                    return Err(AppError::new(StatusCode::BAD_REQUEST, "Version is required"));
+                    return Err(AppError::new(
+                        StatusCode::BAD_REQUEST,
+                        "Version is required",
+                    ));
                 }
                 version = Some(v.to_string());
             }
@@ -2158,7 +2179,9 @@ async fn upload_app_package(
                 let version = version
                     .clone()
                     .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Version is required"))?;
-                let os = os.clone().ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "OS is required"))?;
+                let os = os
+                    .clone()
+                    .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "OS is required"))?;
                 let arch = arch.clone().unwrap_or_else(|| "x86_64".to_string());
                 let prefix = format!(
                     "apps/{}/packages/{}/{}/{}",
@@ -2178,7 +2201,8 @@ async fn upload_app_package(
     let Some((pkg_file_id, pkg_sha256)) = uploaded else {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "No file provided"));
     };
-    let version = version.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Version is required"))?;
+    let version =
+        version.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Version is required"))?;
     let os = os.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "OS is required"))?;
     let arch = arch.unwrap_or_else(|| "x86_64".to_string());
 
@@ -2254,7 +2278,10 @@ async fn build_app_package(
                     .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid version"))?;
                 let v = v.trim();
                 if v.is_empty() {
-                    return Err(AppError::new(StatusCode::BAD_REQUEST, "Version is required"));
+                    return Err(AppError::new(
+                        StatusCode::BAD_REQUEST,
+                        "Version is required",
+                    ));
                 }
                 version = Some(v.to_string());
             }
@@ -2297,10 +2324,9 @@ async fn build_app_package(
                     .file_name()
                     .map(|s| sanitize_filename(s))
                     .unwrap_or_else(|| "installer.bin".to_string());
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Failed reading installer"))?;
+                let bytes = field.bytes().await.map_err(|_| {
+                    AppError::new(StatusCode::BAD_REQUEST, "Failed reading installer")
+                })?;
                 let ext = std::path::Path::new(&filename)
                     .extension()
                     .and_then(|e| e.to_str())
@@ -2354,7 +2380,8 @@ async fn build_app_package(
         }
     }
 
-    let version = version.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Version is required"))?;
+    let version =
+        version.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Version is required"))?;
     let os = os.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "OS is required"))?;
     let arch = arch.unwrap_or_else(|| "x86_64".to_string());
     let (installer_name, installer_bytes) =
@@ -2370,17 +2397,32 @@ async fn build_app_package(
     let work_dir = std::env::temp_dir().join(format!("pdes-cdn-pkg-{}", Uuid::new_v4()));
     tokio::fs::create_dir_all(work_dir.join("installers"))
         .await
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not create temp directory: {}", e)))?;
+        .map_err(|e| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not create temp directory: {}", e),
+            )
+        })?;
     tokio::fs::create_dir_all(work_dir.join("docs")).await.ok();
 
     let installer_path = work_dir.join("installers").join(&installer_name);
     tokio::fs::write(&installer_path, &installer_bytes)
         .await
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not write installer: {}", e)))?;
+        .map_err(|e| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not write installer: {}", e),
+            )
+        })?;
     let icon_path = work_dir.join(&icon_name);
     tokio::fs::write(&icon_path, &icon_bytes)
         .await
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not write icon: {}", e)))?;
+        .map_err(|e| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not write icon: {}", e),
+            )
+        })?;
     for (doc_name, doc_bytes) in &docs {
         let path = work_dir.join("docs").join(doc_name);
         let _ = tokio::fs::write(&path, doc_bytes).await;
@@ -2407,7 +2449,12 @@ async fn build_app_package(
     .to_string();
     tokio::fs::write(work_dir.join("manifest.json"), manifest)
         .await
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not write manifest: {}", e)))?;
+        .map_err(|e| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not write manifest: {}", e),
+            )
+        })?;
 
     let pkg_filename = sanitize_filename(&format!("{}-{}-{}-{}.pkg", slug, version, os, arch));
     let pkg_out = std::env::temp_dir().join(format!("pdes-cdn-built-{}.pkg", Uuid::new_v4()));
@@ -2500,7 +2547,10 @@ async fn upload_firmware(
                     .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid version"))?;
                 let v = v.trim();
                 if v.is_empty() {
-                    return Err(AppError::new(StatusCode::BAD_REQUEST, "Version is required"));
+                    return Err(AppError::new(
+                        StatusCode::BAD_REQUEST,
+                        "Version is required",
+                    ));
                 }
                 version = Some(v.to_string());
             }
@@ -2535,7 +2585,8 @@ async fn upload_firmware(
     let Some((file_id, sha256)) = uploaded else {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "No file provided"));
     };
-    let version = version.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Version is required"))?;
+    let version =
+        version.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Version is required"))?;
 
     let release_id = Uuid::new_v4();
     sqlx::query(
@@ -2613,7 +2664,10 @@ async fn create_token(
     ctx.insert("new_token_name", &name);
     ctx.insert("new_token", &token);
     ctx.insert("can_write", &is_writer(&user));
-    ctx.insert("toast_success", "Created API token. Copy it now; it won’t be shown again.");
+    ctx.insert(
+        "toast_success",
+        "Created API token. Copy it now; it won’t be shown again.",
+    );
     let html = render_template(&state, "tokens.html", ctx)?;
     Ok((jar, html).into_response())
 }
@@ -2625,15 +2679,13 @@ async fn mint_api_token_for_user(state: &AppState, user_id: Uuid, name: &str) ->
     let token_sha256 = sha256_hex(token.as_bytes());
 
     let id = Uuid::new_v4();
-    sqlx::query(
-        "insert into api_tokens (id, user_id, name, token_sha256) values ($1, $2, $3, $4)",
-    )
-    .bind(id)
-    .bind(user_id)
-    .bind(name)
-    .bind(&token_sha256)
-    .execute(&state.pool)
-    .await?;
+    sqlx::query("insert into api_tokens (id, user_id, name, token_sha256) values ($1, $2, $3, $4)")
+        .bind(id)
+        .bind(user_id)
+        .bind(name)
+        .bind(&token_sha256)
+        .execute(&state.pool)
+        .await?;
 
     Ok(token)
 }
@@ -2657,7 +2709,11 @@ async fn revoke_token(
     Ok((jar, Redirect::to("/tokens")).into_response())
 }
 
-async fn stream_cached_file(state: &AppState, id: Uuid, jar: SignedCookieJar) -> AppResult<Response> {
+async fn stream_cached_file(
+    state: &AppState,
+    id: Uuid,
+    jar: SignedCookieJar,
+) -> AppResult<Response> {
     let file = fetch_file_by_id(state, id).await?;
     let Some(file) = file else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "File not found"));
@@ -2692,9 +2748,8 @@ async fn stream_cached_file(state: &AppState, id: Uuid, jar: SignedCookieJar) ->
 }
 
 async fn api_user_from_bearer(state: &AppState, headers: &HeaderMap) -> AppResult<(User, Uuid)> {
-    let token = extract_bearer(headers).ok_or_else(|| {
-        AppError::new_plain(StatusCode::UNAUTHORIZED, "Bearer token required")
-    })?;
+    let token = extract_bearer(headers)
+        .ok_or_else(|| AppError::new_plain(StatusCode::UNAUTHORIZED, "Bearer token required"))?;
     if token.len() < 24 {
         return Err(AppError::new_plain(
             StatusCode::UNAUTHORIZED,
@@ -2778,7 +2833,10 @@ async fn api_latest_package(
     .await?;
 
     let Some((version, os, arch, pkg_sha256, _pkg_file_id)) = record else {
-        return Err(AppError::new_plain(StatusCode::NOT_FOUND, "Package not found"));
+        return Err(AppError::new_plain(
+            StatusCode::NOT_FOUND,
+            "Package not found",
+        ));
     };
 
     let payload = serde_json::json!({
@@ -2804,7 +2862,10 @@ async fn api_download_package(
         .or_else(|| detect_target_from_user_agent(&headers))
         .unwrap_or_else(|| ("windows".to_string(), "x86_64".to_string()));
 
-    let version_filter = query.get("version").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let version_filter = query
+        .get("version")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
 
     let file_id = match version_filter {
         Some(version) => {
@@ -2849,7 +2910,10 @@ async fn api_download_package(
     };
 
     let Some(file_id) = file_id else {
-        return Err(AppError::new_plain(StatusCode::NOT_FOUND, "Package not found"));
+        return Err(AppError::new_plain(
+            StatusCode::NOT_FOUND,
+            "Package not found",
+        ));
     };
 
     let file = fetch_file_by_id(&state, file_id).await?;
@@ -2997,7 +3061,10 @@ async fn api_download_firmware(
     };
 
     let Some(file_id) = file_id else {
-        return Err(AppError::new_plain(StatusCode::NOT_FOUND, "Firmware not found"));
+        return Err(AppError::new_plain(
+            StatusCode::NOT_FOUND,
+            "Firmware not found",
+        ));
     };
 
     let file = fetch_file_by_id(&state, file_id).await?;
@@ -3074,7 +3141,9 @@ async fn stream_cached_image_file(state: &AppState, file: &CachedFile) -> AppRes
             "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
         );
     }
-    let response = builder.body(Body::from_stream(stream)).map_err(AppError::from)?;
+    let response = builder
+        .body(Body::from_stream(stream))
+        .map_err(AppError::from)?;
     Ok(response)
 }
 
@@ -3096,40 +3165,49 @@ async fn store_local_file_as_cached(
     let dest_path = state.cache_dir.join(&relative_path);
 
     if let Some(parent) = dest_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| {
-                AppError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Could not create directory {}: {}", parent.display(), e),
-                )
-            })?;
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not create directory {}: {}", parent.display(), e),
+            )
+        })?;
     }
 
-    let mut src = File::open(source_path)
-        .await
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not open built pkg: {}", e)))?;
-    let mut dest = File::create(&dest_path)
-        .await
-        .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not create file {}: {}", dest_path.display(), e)))?;
+    let mut src = File::open(source_path).await.map_err(|e| {
+        AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not open built pkg: {}", e),
+        )
+    })?;
+    let mut dest = File::create(&dest_path).await.map_err(|e| {
+        AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not create file {}: {}", dest_path.display(), e),
+        )
+    })?;
 
     let mut size: i64 = 0;
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {
         use tokio::io::AsyncReadExt;
-        let n = src
-            .read(&mut buf)
-            .await
-            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not read built pkg: {}", e)))?;
+        let n = src.read(&mut buf).await.map_err(|e| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not read built pkg: {}", e),
+            )
+        })?;
         if n == 0 {
             break;
         }
         size += n as i64;
         hasher.update(&buf[..n]);
-        dest.write_all(&buf[..n])
-            .await
-            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not write built pkg: {}", e)))?;
+        dest.write_all(&buf[..n]).await.map_err(|e| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not write built pkg: {}", e),
+            )
+        })?;
     }
     let sha256 = to_hex(&hasher.finalize());
 
@@ -3143,16 +3221,22 @@ async fn store_local_file_as_cached(
     .execute(&state.pool)
     .await?;
 
-    Ok(UploadResult { id: file_id, sha256 })
+    Ok(UploadResult {
+        id: file_id,
+        sha256,
+    })
 }
 
-async fn build_tar_gz(src_dir: &std::path::Path, dest_file: &std::path::Path) -> Result<(), String> {
+async fn build_tar_gz(
+    src_dir: &std::path::Path,
+    dest_file: &std::path::Path,
+) -> Result<(), String> {
     let src_dir = src_dir.to_path_buf();
     let dest_file = dest_file.to_path_buf();
 
     tokio::task::spawn_blocking(move || {
-        use flate2::write::GzEncoder;
         use flate2::Compression;
+        use flate2::write::GzEncoder;
         use std::fs::File as StdFile;
         let out = StdFile::create(&dest_file)
             .map_err(|e| format!("Could not create archive {}: {}", dest_file.display(), e))?;
@@ -3188,7 +3272,10 @@ async fn save_upload_to_prefix(
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
-    if !allowed_exts.iter().any(|allowed| allowed.eq_ignore_ascii_case(&ext)) {
+    if !allowed_exts
+        .iter()
+        .any(|allowed| allowed.eq_ignore_ascii_case(&ext))
+    {
         return Err(AppError::new(
             StatusCode::BAD_REQUEST,
             format!(
@@ -3205,24 +3292,20 @@ async fn save_upload_to_prefix(
     let dest_path = state.cache_dir.join(&relative_path);
 
     if let Some(parent) = dest_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| {
-                AppError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Could not create directory {}: {}", parent.display(), e),
-                )
-            })?;
-    }
-
-    let mut dest = File::create(&dest_path)
-        .await
-        .map_err(|e| {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
             AppError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Could not create file {}: {}", dest_path.display(), e),
+                format!("Could not create directory {}: {}", parent.display(), e),
             )
         })?;
+    }
+
+    let mut dest = File::create(&dest_path).await.map_err(|e| {
+        AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not create file {}: {}", dest_path.display(), e),
+        )
+    })?;
     let mut size: i64 = 0;
     let mut hasher = Sha256::new();
 
@@ -3233,14 +3316,12 @@ async fn save_upload_to_prefix(
     {
         size += chunk.len() as i64;
         hasher.update(&chunk);
-        dest.write_all(&chunk)
-            .await
-            .map_err(|e| {
-                AppError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Failed writing upload to {}: {}", dest_path.display(), e),
-                )
-            })?;
+        dest.write_all(&chunk).await.map_err(|e| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed writing upload to {}: {}", dest_path.display(), e),
+            )
+        })?;
     }
 
     let sha256 = to_hex(&hasher.finalize());
@@ -3255,7 +3336,10 @@ async fn save_upload_to_prefix(
     .execute(&state.pool)
     .await?;
 
-    Ok(UploadResult { id: file_id, sha256 })
+    Ok(UploadResult {
+        id: file_id,
+        sha256,
+    })
 }
 
 fn sanitize_slug(value: &str) -> String {
@@ -3311,7 +3395,11 @@ fn normalize_arch(value: &str) -> AppResult<String> {
 }
 
 fn parse_target_query(query: &HashMap<String, String>) -> Option<(String, String)> {
-    if let Some(target) = query.get("target").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    if let Some(target) = query
+        .get("target")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         let mut parts = target.splitn(2, ':');
         let os_raw = parts.next()?.trim();
         let arch_raw = parts.next().unwrap_or("x86_64").trim();
@@ -3319,7 +3407,10 @@ fn parse_target_query(query: &HashMap<String, String>) -> Option<(String, String
         let arch = normalize_arch(arch_raw).ok()?;
         return Some((os, arch));
     }
-    let os = query.get("os").map(|s| s.trim()).filter(|s| !s.is_empty())?;
+    let os = query
+        .get("os")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())?;
     let os = normalize_os(os).ok()?;
     let arch = query
         .get("arch")
@@ -3331,7 +3422,11 @@ fn parse_target_query(query: &HashMap<String, String>) -> Option<(String, String
 }
 
 fn detect_target_from_user_agent(headers: &HeaderMap) -> Option<(String, String)> {
-    let ua = headers.get(header::USER_AGENT)?.to_str().ok()?.to_ascii_lowercase();
+    let ua = headers
+        .get(header::USER_AGENT)?
+        .to_str()
+        .ok()?
+        .to_ascii_lowercase();
     let os = if ua.contains("windows") {
         "windows"
     } else if ua.contains("mac os x") || ua.contains("macintosh") {
@@ -3569,24 +3664,20 @@ async fn save_upload(
     let dest_path = state.cache_dir.join(&relative_path);
 
     if let Some(parent) = dest_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| {
-                AppError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Could not create directory {}: {}", parent.display(), e),
-                )
-            })?;
-    }
-
-    let mut dest = File::create(&dest_path)
-        .await
-        .map_err(|e| {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
             AppError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Could not create file {}: {}", dest_path.display(), e),
+                format!("Could not create directory {}: {}", parent.display(), e),
             )
         })?;
+    }
+
+    let mut dest = File::create(&dest_path).await.map_err(|e| {
+        AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Could not create file {}: {}", dest_path.display(), e),
+        )
+    })?;
     let mut size: i64 = 0;
 
     while let Some(chunk) = field
@@ -3595,14 +3686,12 @@ async fn save_upload(
         .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Failed reading upload"))?
     {
         size += chunk.len() as i64;
-        dest.write_all(&chunk)
-            .await
-            .map_err(|e| {
-                AppError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Failed writing upload to {}: {}", dest_path.display(), e),
-                )
-            })?;
+        dest.write_all(&chunk).await.map_err(|e| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed writing upload to {}: {}", dest_path.display(), e),
+            )
+        })?;
     }
 
     sqlx::query(
@@ -3880,7 +3969,12 @@ fn render_plain_email_html(subject: &str, body_text: &str) -> String {
     )
 }
 
-async fn send_email(to: &str, subject: &str, body_text: &str, body_html: Option<String>) -> AppResult<()> {
+async fn send_email(
+    to: &str,
+    subject: &str,
+    body_text: &str,
+    body_html: Option<String>,
+) -> AppResult<()> {
     let host = std::env::var("SMTP_HOST").unwrap_or_default();
     let username = std::env::var("SMTP_USERNAME").unwrap_or_default();
     let password = std::env::var("SMTP_PASSWORD").unwrap_or_default();
@@ -3888,7 +3982,8 @@ async fn send_email(to: &str, subject: &str, body_text: &str, body_html: Option<
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(587);
-    let from = std::env::var("SMTP_FROM").unwrap_or_else(|_| "support@palodurosystems.io".to_string());
+    let from =
+        std::env::var("SMTP_FROM").unwrap_or_else(|_| "support@palodurosystems.io".to_string());
     let tls_mode_raw = std::env::var("SMTP_TLS").ok().unwrap_or_default();
 
     if host.is_empty() {
@@ -3902,20 +3997,21 @@ async fn send_email(to: &str, subject: &str, body_text: &str, body_html: Option<
     // lettre::AsyncSmtpTransport::relay uses implicit TLS ("SMTPS", typically port 465).
     // Port 587 is usually STARTTLS, so use starttls_relay by default (or auto-switch based on port).
     let tls_mode = if tls_mode_raw.is_empty() {
-        if port == 465 {
-            "wrapper"
-        } else {
-            "starttls"
-        }
+        if port == 465 { "wrapper" } else { "starttls" }
     } else {
         tls_mode_raw.trim()
     }
     .to_ascii_lowercase();
 
-    let email_builder = Message::builder()
-        .from(from.parse::<Mailbox>().map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Invalid FROM email"))?)
-        .to(to.parse::<Mailbox>().map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid recipient email"))?)
-        .subject(subject);
+    let email_builder =
+        Message::builder()
+            .from(from.parse::<Mailbox>().map_err(|_| {
+                AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Invalid FROM email")
+            })?)
+            .to(to
+                .parse::<Mailbox>()
+                .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid recipient email"))?)
+            .subject(subject);
 
     let html = body_html.unwrap_or_else(|| render_plain_email_html(subject, body_text));
     let email = email_builder
@@ -3925,19 +4021,23 @@ async fn send_email(to: &str, subject: &str, body_text: &str, body_html: Option<
         ))
         .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed to build email"))?;
 
-    if (username.is_empty() && !password.is_empty()) || (!username.is_empty() && password.is_empty()) {
+    if (username.is_empty() && !password.is_empty())
+        || (!username.is_empty() && password.is_empty())
+    {
         warn!("SMTP_USERNAME/SMTP_PASSWORD partially configured; authentication may fail");
     }
 
     let mailer_builder = match tls_mode.as_str() {
         "starttls" => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&host),
         "wrapper" | "tls" | "smtps" => AsyncSmtpTransport::<Tokio1Executor>::relay(&host),
-        "none" | "plain" | "plaintext" => Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)),
+        "none" | "plain" | "plaintext" => Ok(
+            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host),
+        ),
         _ => {
             return Err(AppError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Invalid SMTP_TLS (use starttls|wrapper|none)",
-            ))
+            ));
         }
     }
     .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed to create mailer"))?
@@ -3952,13 +4052,13 @@ async fn send_email(to: &str, subject: &str, body_text: &str, body_html: Option<
     let mailer = mailer_builder.build();
 
     info!(to = %to, subject = %subject, host = %host, port = port, tls = %tls_mode, "sending email");
-    mailer
-        .send(email)
-        .await
-        .map_err(|e| {
-            error!(to = %to, error = %e, "failed to send email");
-            AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to send email: {}", e))
-        })?;
+    mailer.send(email).await.map_err(|e| {
+        error!(to = %to, error = %e, "failed to send email");
+        AppError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to send email: {}", e),
+        )
+    })?;
     info!(to = %to, subject = %subject, "email sent");
 
     Ok(())
@@ -3968,11 +4068,7 @@ fn base_url() -> String {
     std::env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:3000".to_string())
 }
 
-fn render_template(
-    state: &AppState,
-    name: &str,
-    mut ctx: TeraContext,
-) -> AppResult<Html<String>> {
+fn render_template(state: &AppState, name: &str, mut ctx: TeraContext) -> AppResult<Html<String>> {
     insert_app_template_globals(&mut ctx);
     let rendered = state
         .templates
@@ -4007,8 +4103,13 @@ async fn create_bucket(
     let project = sanitize_bucket(&form.project);
     let bucket = sanitize_bucket(&form.bucket);
     if project.is_empty() || bucket.is_empty() {
-        return render_portal_with_toast(&state, &user, Some("Project and bucket are required"), None)
-            .await;
+        return render_portal_with_toast(
+            &state,
+            &user,
+            Some("Project and bucket are required"),
+            None,
+        )
+        .await;
     }
 
     let token: String = rand::thread_rng()
@@ -4027,8 +4128,12 @@ async fn create_bucket(
     .bind(&token)
     .execute(&state.pool)
     .await
-    .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, format!("Could not create bucket: {}", e)))
-    {
+    .map_err(|e| {
+        AppError::new(
+            StatusCode::BAD_REQUEST,
+            format!("Could not create bucket: {}", e),
+        )
+    }) {
         return render_portal_with_toast(&state, &user, Some(&err.message), None).await;
     }
 
