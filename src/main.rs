@@ -2167,22 +2167,30 @@ async fn build_app_package(
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Could not write manifest: {}", e)))?;
 
     let pkg_filename = sanitize_filename(&format!("{}-{}-{}-{}.pkg", slug, version, os, arch));
-    let pkg_out = work_dir.join(&pkg_filename);
+    // Important: write the archive outside the directory being archived, otherwise tar may try to
+    // include the output file and fail with "file changed as we read it".
+    let pkg_out = std::env::temp_dir().join(format!("pdes-cdn-built-{}", Uuid::new_v4()));
 
-    let status = Command::new("tar")
+    let output = Command::new("tar")
         .arg("-czf")
         .arg(&pkg_out)
         .arg("-C")
         .arg(&work_dir)
         .arg(".")
-        .status()
+        .output()
         .await
         .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to run tar: {}", e)))?;
-    if !status.success() {
-        return Err(AppError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to build .pkg (tar exited non-zero)",
-        ));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        let message = if stderr.is_empty() {
+            "Failed to build .pkg (tar exited non-zero)".to_string()
+        } else {
+            format!("Failed to build .pkg: {}", stderr)
+        };
+        let _ = tokio::fs::remove_dir_all(&work_dir).await;
+        let _ = tokio::fs::remove_file(&pkg_out).await;
+        return Err(AppError::new(StatusCode::INTERNAL_SERVER_ERROR, message));
     }
 
     let prefix = format!(
@@ -2214,6 +2222,7 @@ async fn build_app_package(
     .await?;
 
     let _ = tokio::fs::remove_dir_all(&work_dir).await;
+    let _ = tokio::fs::remove_file(&pkg_out).await;
     state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
     Ok((jar, Redirect::to("/apps/manage")).into_response())

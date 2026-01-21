@@ -116,6 +116,7 @@ curl -fS \
 
 - Env var changes not taking effect: `sudo systemctl restart pdes-cdn`
 - `502 Bad Gateway` from nginx: `sudo systemctl status pdes-cdn` and `sudo journalctl -u pdes-cdn -n 200`
+- `413 Request Entity Too Large` from nginx: set `client_max_body_size` in the nginx site config (and ensure `MAX_UPLOAD_BYTES` matches), then `sudo nginx -t && sudo systemctl reload nginx`
 - Password reset links go to `localhost`: set `BASE_URL=https://your-domain`
 - Upload errors like “Could not create directory …”: ensure `CACHE_DIR` exists and is writable by the service user
 - SMTP errors like `wrong version number`: use `SMTP_TLS=starttls` with port `587`, or `SMTP_TLS=wrapper` with port `465`

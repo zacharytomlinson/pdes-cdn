@@ -292,6 +292,8 @@ server {
     ssl_certificate_key /etc/ssl/private/ssl-cert-snakeoil.key;
 
     index index.html index.htm;
+    # Match app-side MAX_UPLOAD_BYTES (default 200MB); adjust if you change MAX_UPLOAD_BYTES.
+    client_max_body_size 250m;
 
     location ^~ /.well-known/acme-challenge/ {
         root ${CHALLENGE_ROOT};
@@ -304,6 +306,7 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_request_buffering off;
         proxy_pass http://127.0.0.1:${PORT};
     }
 }
