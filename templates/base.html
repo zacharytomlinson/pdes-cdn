@@ -239,6 +239,58 @@
             color: #bae6fd;
             font-size: 12px;
         }
+        .app-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 18px;
+            align-items: stretch;
+        }
+        .app-card {
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+        .app-brand {
+            display: flex;
+            align-items: flex-start;
+            gap: 14px;
+        }
+        .app-icon {
+            width: 54px;
+            height: 54px;
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 20px;
+            background: rgba(14,165,233,0.14);
+            border: 1px solid rgba(14,165,233,0.35);
+            color: #bae6fd;
+            flex: 0 0 auto;
+        }
+        .app-summary { min-width: 0; flex: 1; }
+        .app-title-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+        .app-title {
+            margin: 0;
+            font-size: 18px;
+            line-height: 1.2;
+            min-width: 0;
+        }
+        .app-desc { margin: 8px 0 0; }
+        .app-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: auto;
+        }
         footer {
             margin-top: 18px;
             padding: 10px 2px 0;

@@ -149,7 +149,7 @@ echo "Resolved URLs:"
 echo "  BIN_URL=${BIN_URL}"
 echo "  TARBALL_URL=${TARBALL_URL}"
 
-echo "[1/3] Downloading binary (${ASSET_NAME})..."
+echo "[1/4] Downloading binary (${ASSET_NAME})..."
 ASSET_DOWNLOAD_URL=""
 if [[ -n "$ASSET_URL_OVERRIDE" ]]; then
   echo "Using ASSET_URL_OVERRIDE=${ASSET_URL_OVERRIDE}"
@@ -177,7 +177,7 @@ else
 fi
 chmod +x "$TMPDIR/pdes-cdn"
 
-echo "[2/3] Refreshing templates..."
+echo "[2/4] Refreshing templates..."
 download_url "$TARBALL_URL" "$TMPDIR/src.tar.gz"
 tar -xzf "$TMPDIR/src.tar.gz" -C "$TMPDIR"
 SRC_ROOT=$(find "$TMPDIR" -maxdepth 1 -mindepth 1 -type d | head -n1)
@@ -190,7 +190,7 @@ else
   exit 1
 fi
 
-echo "[3/3] Installing binary and restarting service..."
+echo "[3/4] Installing binary..."
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "DRY_RUN=1: skipping install + restart. Staged files:"
   echo "  ${TMPDIR}/pdes-cdn"
@@ -205,6 +205,85 @@ mv -f "${APP_DIR}/pdes-cdn.new" "${APP_DIR}/pdes-cdn"
 
 rm -rf "${APP_DIR}/templates"
 mv -f "${APP_DIR}/templates.new" "${APP_DIR}/templates"
+
+echo "[4/4] Running migrations + restarting service..."
+ENV_FILE="/etc/${SERVICE_NAME}.env"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+if command -v psql >/dev/null 2>&1 && [[ -n "${DATABASE_URL:-}" ]]; then
+  psql "$DATABASE_URL" >/dev/null <<'SQL'
+create table if not exists apps (
+    id uuid primary key,
+    slug text not null unique,
+    name text not null,
+    description text,
+    created_at timestamptz not null default now()
+);
+
+create table if not exists app_packages (
+    id uuid primary key,
+    app_id uuid not null references apps(id) on delete cascade,
+    version text not null,
+    os text not null default 'unknown',
+    arch text not null default 'x86_64',
+    pkg_file_id uuid not null references cached_files(id) on delete restrict,
+    pkg_sha256 text not null,
+    created_at timestamptz not null default now(),
+    unique (app_id, version, os, arch)
+);
+
+create table if not exists firmware_releases (
+    id uuid primary key,
+    app_id uuid not null references apps(id) on delete cascade,
+    channel text not null default 'stable',
+    version text not null,
+    file_id uuid not null references cached_files(id) on delete restrict,
+    sha256 text not null,
+    created_at timestamptz not null default now(),
+    unique (app_id, channel, version)
+);
+
+create table if not exists app_assignments (
+    app_id uuid not null references apps(id) on delete cascade,
+    user_id uuid not null references users(id) on delete cascade,
+    created_at timestamptz not null default now(),
+    primary key (app_id, user_id)
+);
+
+create index if not exists idx_app_assignments_user on app_assignments(user_id);
+create index if not exists idx_app_packages_app_created_at on app_packages(app_id, created_at desc);
+create index if not exists idx_firmware_releases_app_created_at on firmware_releases(app_id, created_at desc);
+create index if not exists idx_app_packages_sha256 on app_packages(app_id, pkg_sha256);
+create index if not exists idx_firmware_releases_sha256 on firmware_releases(app_id, sha256);
+
+create table if not exists api_tokens (
+    id uuid primary key,
+    user_id uuid not null references users(id) on delete cascade,
+    name text not null default '',
+    token_sha256 text not null unique,
+    created_at timestamptz not null default now(),
+    last_used_at timestamptz
+);
+
+create index if not exists idx_api_tokens_user_id on api_tokens(user_id);
+
+-- upgrade existing installs that may have the older (app_id, version) unique constraint
+alter table app_packages
+    add column if not exists os text not null default 'unknown';
+alter table app_packages
+    add column if not exists arch text not null default 'x86_64';
+alter table app_packages
+    drop constraint if exists app_packages_app_id_version_key;
+alter table app_packages
+    drop constraint if exists app_packages_app_id_version_os_arch_key;
+alter table app_packages
+    add constraint app_packages_app_id_version_os_arch_key unique (app_id, version, os, arch);
+SQL
+else
+  echo "Skipping migrations (psql not found or DATABASE_URL not set in ${ENV_FILE})."
+fi
 
 systemctl restart "${SERVICE_NAME}"
 systemctl status "${SERVICE_NAME}" --no-pager --full

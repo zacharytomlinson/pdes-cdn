@@ -23,10 +23,10 @@ use lettre::{
     AsyncSmtpTransport, AsyncTransport, Tokio1Executor,
 };
 use moka::future::Cache;
-use rand::{distributions::Alphanumeric, rngs::OsRng, Rng};
+use rand::{distributions::Alphanumeric, rngs::OsRng, Rng, RngCore};
 use serde::Deserialize;
 use sqlx::{postgres::PgPoolOptions, FromRow, PgPool};
-use sha2::{Digest, Sha512};
+use sha2::{Digest, Sha256, Sha512};
 use tera::{Context as TeraContext, Tera};
 use tower_http::trace::TraceLayer;
 use tokio::fs::File;
@@ -315,6 +315,65 @@ struct InviteUserForm {
     email: String,
 }
 
+#[derive(Debug, Clone, FromRow, serde::Serialize)]
+struct UserBrief {
+    id: Uuid,
+    email: String,
+    permission: String,
+}
+
+#[derive(Debug, Clone, FromRow, serde::Serialize)]
+struct ApiTokenRow {
+    id: Uuid,
+    user_id: Uuid,
+    name: String,
+    created_at: DateTime<Utc>,
+    last_used_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct ApiUserAuthRow {
+    token_id: Uuid,
+    id: Uuid,
+    email: String,
+    password_hash: String,
+    permission: String,
+    reset_token: Option<String>,
+    reset_token_expires: Option<DateTime<Utc>>,
+    must_reset: bool,
+}
+
+#[derive(Debug, Clone, FromRow, serde::Serialize)]
+struct AppManageView {
+    slug: String,
+    name: String,
+    description: Option<String>,
+    latest_pkg_version: Option<String>,
+    latest_pkg_os: Option<String>,
+    latest_pkg_arch: Option<String>,
+    latest_fw_version: Option<String>,
+    latest_fw_channel: Option<String>,
+    assignment_count: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct AppTargetView {
+    os: String,
+    arch: String,
+    version: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct AppCardView {
+    slug: String,
+    name: String,
+    description: Option<String>,
+    latest_version: Option<String>,
+    can_download: bool,
+    icon_text: String,
+    targets: Vec<AppTargetView>,
+}
+
 #[tokio::main]
 async fn main() -> AppResult<()> {
     dotenv().ok();
@@ -432,6 +491,20 @@ async fn main() -> AppResult<()> {
             get(show_reset_confirm).post(do_reset_confirm),
         )
         .route("/portal", get(portal))
+        .route("/apps", get(list_assigned_apps))
+        .route("/apps/manage", get(apps_manage))
+        .route("/apps/create", post(create_app))
+        .route("/apps/:slug/assign", post(assign_app))
+        .route("/apps/:slug/download", get(download_latest_pkg))
+        .route("/apps/:slug/firmware/latest", get(latest_firmware_json))
+        .route(
+            "/apps/:slug/firmware/latest/download",
+            get(download_latest_firmware),
+        )
+        .route("/apps/:slug/package/upload", post(upload_app_package))
+        .route("/apps/:slug/firmware/upload", post(upload_firmware))
+        .route("/tokens", get(list_tokens).post(create_token))
+        .route("/tokens/:id/revoke", post(revoke_token))
         .route("/files", get(list_files))
         .route("/files/:id/delete", post(delete_file))
         .route("/cache-summary", get(cache_summary))
@@ -440,6 +513,14 @@ async fn main() -> AppResult<()> {
         .route("/invite", axum::routing::post(invite_user))
         .route("/upload", axum::routing::post(upload_file))
         .route("/api/upload", axum::routing::post(api_upload))
+        .route(
+            "/api/apps/:slug/package/latest",
+            get(api_latest_package),
+        )
+        .route(
+            "/api/apps/:slug/package/download",
+            get(api_download_package),
+        )
         .route("/download/:id", get(download_file))
         .layer(DefaultBodyLimit::max(max_upload_bytes))
         .layer(TraceLayer::new_for_http())
@@ -717,6 +798,10 @@ async fn portal(State(state): State<AppState>, jar: SignedCookieJar) -> AppResul
         return Ok((jar, Redirect::to("/login")).into_response());
     };
 
+    if !is_writer(&user) {
+        return Ok((jar, Redirect::to("/apps")).into_response());
+    }
+
     let buckets = if is_writer(&user) {
         fetch_buckets(&state).await?
     } else {
@@ -776,6 +861,13 @@ async fn list_files(
         let jar = jar.remove(Cookie::from(SESSION_COOKIE));
         return Ok((jar, Redirect::to("/login")).into_response());
     };
+    if !is_writer(&user) {
+        warn!(user_id = %user.id, email = %user.email, "list_files: forbidden (not writer)");
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
     let hx = is_hx_request(&headers);
     info!(
         user_id = %user.id,
@@ -875,6 +967,13 @@ async fn cache_summary(
         let jar = jar.remove(Cookie::from(SESSION_COOKIE));
         return Ok((jar, Redirect::to("/login")).into_response());
     };
+    if !is_writer(&user) {
+        warn!(user_id = %user.id, email = %user.email, "cache_summary: forbidden (not writer)");
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
     info!(user_id = %user.id, email = %user.email, hx = %is_hx_request(&headers), "cache_summary");
 
     let files = fetch_files(&state).await?;
@@ -926,8 +1025,10 @@ async fn upload_file(
     };
     if !is_writer(&user) {
         warn!(user_id = %user.id, email = %user.email, "upload_file: forbidden (not writer)");
-        return render_portal_with_toast(&state, &user, Some("Writer permission required"), None)
-            .await;
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
     }
 
     let mut bucket_path: Option<String> = None;
@@ -1066,8 +1167,10 @@ async fn delete_file(
     };
     if !is_writer(&user) {
         warn!(user_id = %user.id, email = %user.email, file_id = %id, "delete_file: forbidden (not writer)");
-        return render_portal_with_toast(&state, &user, Some("Writer permission required"), None)
-            .await;
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
     }
 
     let file = fetch_file_by_id(&state, id).await?;
@@ -1103,8 +1206,10 @@ async fn delete_bucket(
     };
     if !is_writer(&user) {
         warn!(user_id = %user.id, email = %user.email, bucket_id = %id, "delete_bucket: forbidden (not writer)");
-        return render_portal_with_toast(&state, &user, Some("Writer permission required"), None)
-            .await;
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
     }
 
     let record = sqlx::query_as::<_, ProjectToken>(
@@ -1165,8 +1270,10 @@ async fn invite_user(
     };
     if !is_writer(&user) {
         warn!(user_id = %user.id, email = %user.email, "invite_user: forbidden (not writer)");
-        return render_portal_with_toast(&state, &user, Some("Writer permission required"), None)
-            .await;
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
     }
 
     let email = form.email.trim().to_lowercase();
@@ -1242,11 +1349,18 @@ async fn download_file(
     State(state): State<AppState>,
     jar: SignedCookieJar,
 ) -> AppResult<Response> {
-    let Some(_user) = current_user(&state, &jar).await? else {
+    let Some(user) = current_user(&state, &jar).await? else {
         warn!(file_id = %id, "download_file: unauthenticated, redirecting to login");
         let jar = jar.remove(Cookie::from(SESSION_COOKIE));
         return Ok((jar, Redirect::to("/login")).into_response());
     };
+    if !is_writer(&user) {
+        warn!(user_id = %user.id, email = %user.email, file_id = %id, "download_file: forbidden (not writer)");
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
 
     let file = fetch_file_by_id(&state, id).await?;
 
@@ -1282,6 +1396,1206 @@ async fn download_file(
         .map_err(AppError::from)?;
 
     Ok((jar, response).into_response())
+}
+
+async fn list_assigned_apps(
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+
+    if is_writer(&user) {
+        return Ok((jar, Redirect::to("/apps/manage")).into_response());
+    }
+
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        r#"
+        select
+            a.slug,
+            a.name,
+            a.description,
+            p.os,
+            p.arch,
+            p.version
+        from apps a
+        join app_assignments aa on aa.app_id = a.id
+        left join lateral (
+            select distinct on (os, arch) os, arch, version
+            from app_packages
+            where app_id = a.id
+            order by os, arch, created_at desc
+        ) p on true
+        where aa.user_id = $1
+        order by a.name, p.os, p.arch
+        "#,
+    )
+    .bind(user.id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let mut apps: Vec<AppCardView> = Vec::new();
+    for (slug, name, description, os, arch, version) in rows {
+        let existing = apps.iter_mut().find(|a| a.slug == slug);
+        let entry = match existing {
+            Some(a) => a,
+            None => {
+                apps.push(AppCardView {
+                    icon_text: name
+                        .chars()
+                        .next()
+                        .map(|c| c.to_ascii_uppercase().to_string())
+                        .unwrap_or_else(|| "?".to_string()),
+                    slug: slug.clone(),
+                    name,
+                    description,
+                    latest_version: None,
+                    can_download: false,
+                    targets: Vec::new(),
+                });
+                apps.last_mut().unwrap()
+            }
+        };
+
+        if let (Some(os), Some(arch), Some(version)) = (os, arch, version) {
+            entry.targets.push(AppTargetView { os, arch, version });
+        }
+    }
+
+    for app in &mut apps {
+        app.can_download = !app.targets.is_empty();
+        if app.targets.len() == 1 {
+            app.latest_version = app.targets.first().map(|t| t.version.clone());
+        }
+    }
+
+    let mut ctx = TeraContext::new();
+    ctx.insert("user_email", &user.email);
+    ctx.insert("apps", &apps);
+    ctx.insert("can_write", &false);
+    let html = render_template(&state, "apps.html", ctx)?;
+    Ok((jar, html).into_response())
+}
+
+async fn apps_manage(State(state): State<AppState>, jar: SignedCookieJar) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+
+    let apps = sqlx::query_as::<_, AppManageView>(
+        r#"
+        select
+            a.slug as slug,
+            a.name as name,
+            a.description as description,
+            lp.version as latest_pkg_version,
+            lp.os as latest_pkg_os,
+            lp.arch as latest_pkg_arch,
+            lf.version as latest_fw_version,
+            lf.channel as latest_fw_channel,
+            coalesce(ac.assignment_count, 0) as assignment_count
+        from apps a
+        left join lateral (
+            select version, os, arch
+            from app_packages
+            where app_id = a.id
+            order by created_at desc
+            limit 1
+        ) lp on true
+        left join lateral (
+            select version, channel
+            from firmware_releases
+            where app_id = a.id
+            order by created_at desc
+            limit 1
+        ) lf on true
+        left join lateral (
+            select count(*)::bigint as assignment_count
+            from app_assignments
+            where app_id = a.id
+        ) ac on true
+        order by a.created_at desc
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    let users = sqlx::query_as::<_, UserBrief>("select id, email, permission from users order by email")
+        .fetch_all(&state.pool)
+        .await?;
+
+    let mut ctx = TeraContext::new();
+    ctx.insert("user_email", &user.email);
+    ctx.insert("apps", &apps);
+    ctx.insert("users", &users);
+    ctx.insert("can_write", &true);
+    let html = render_template(&state, "apps_manage.html", ctx)?;
+    Ok((jar, html).into_response())
+}
+
+async fn create_app(
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Form(form): Form<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+
+    let slug_raw = form.get("slug").map(|s| s.trim()).unwrap_or("");
+    let name = form.get("name").map(|s| s.trim()).unwrap_or("");
+    let description = form
+        .get("description")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    let slug = sanitize_slug(slug_raw);
+    if slug.is_empty() {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "Invalid app slug"));
+    }
+    if name.is_empty() {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "App name is required"));
+    }
+
+    let id = Uuid::new_v4();
+    sqlx::query("insert into apps (id, slug, name, description) values ($1, $2, $3, $4)")
+        .bind(id)
+        .bind(&slug)
+        .bind(name)
+        .bind(description)
+        .execute(&state.pool)
+        .await?;
+
+    Ok((jar, Redirect::to("/apps/manage")).into_response())
+}
+
+async fn assign_app(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Form(form): Form<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+
+    let slug = sanitize_slug(&slug);
+    let user_id = form
+        .get("user_id")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Select a user"))?;
+    let user_id = Uuid::parse_str(user_id)
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid user id"))?;
+
+    let app_id: Uuid = sqlx::query_scalar("select id from apps where slug = $1")
+        .bind(&slug)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "App not found"))?;
+
+    sqlx::query(
+        "insert into app_assignments (app_id, user_id) values ($1, $2) on conflict do nothing",
+    )
+    .bind(app_id)
+    .bind(user_id)
+    .execute(&state.pool)
+    .await?;
+
+    Ok((jar, Redirect::to("/apps/manage")).into_response())
+}
+
+async fn download_latest_pkg(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        warn!(app_slug = %slug, "download_latest_pkg: unauthenticated, redirecting to login");
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    let slug = sanitize_slug(&slug);
+
+    let requested = parse_target_query(&query).or_else(|| detect_target_from_user_agent(&headers));
+
+    let record: Option<(Uuid, String, String, String)> = match (is_writer(&user), requested) {
+        (true, Some((os, arch))) => {
+            sqlx::query_as::<_, (Uuid, String, String, String)>(
+                r#"
+                select p.pkg_file_id, p.version, p.os, p.arch
+                from apps a
+                join app_packages p on p.app_id = a.id
+                where a.slug = $1 and p.os = $2 and (p.arch = $3 or p.arch = 'any')
+                order by (p.arch = $3) desc, p.created_at desc
+                limit 1
+                "#,
+            )
+            .bind(&slug)
+            .bind(&os)
+            .bind(&arch)
+            .fetch_optional(&state.pool)
+            .await?
+        }
+        (false, Some((os, arch))) => {
+            sqlx::query_as::<_, (Uuid, String, String, String)>(
+                r#"
+                select p.pkg_file_id, p.version, p.os, p.arch
+                from apps a
+                join app_assignments aa on aa.app_id = a.id
+                join app_packages p on p.app_id = a.id
+                where a.slug = $1 and aa.user_id = $2 and p.os = $3 and (p.arch = $4 or p.arch = 'any')
+                order by (p.arch = $4) desc, p.created_at desc
+                limit 1
+                "#,
+            )
+            .bind(&slug)
+            .bind(user.id)
+            .bind(&os)
+            .bind(&arch)
+            .fetch_optional(&state.pool)
+            .await?
+        }
+        (true, None) => {
+            sqlx::query_as::<_, (Uuid, String, String, String)>(
+                r#"
+                select p.pkg_file_id, p.version, p.os, p.arch
+                from apps a
+                join app_packages p on p.app_id = a.id
+                where a.slug = $1
+                order by p.created_at desc
+                limit 1
+                "#,
+            )
+            .bind(&slug)
+            .fetch_optional(&state.pool)
+            .await?
+        }
+        (false, None) => {
+            sqlx::query_as::<_, (Uuid, String, String, String)>(
+                r#"
+                select p.pkg_file_id, p.version, p.os, p.arch
+                from apps a
+                join app_assignments aa on aa.app_id = a.id
+                join app_packages p on p.app_id = a.id
+                where a.slug = $1 and aa.user_id = $2
+                order by p.created_at desc
+                limit 1
+                "#,
+            )
+            .bind(&slug)
+            .bind(user.id)
+            .fetch_optional(&state.pool)
+            .await?
+        }
+    };
+
+    let Some((file_id, version, os, arch)) = record else {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "Package not found"));
+    };
+
+    info!(email = %user.email, app_slug = %slug, pkg_version = %version, pkg_os = %os, pkg_arch = %arch, file_id = %file_id, "download_latest_pkg");
+    stream_cached_file(&state, file_id, jar).await
+}
+
+async fn latest_firmware_json(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Query(query): Query<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    let slug = sanitize_slug(&slug);
+    let channel = query
+        .get("channel")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(sanitize_slug)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "stable".to_string());
+
+    let record = if is_writer(&user) {
+        sqlx::query_as::<_, (String, String, Uuid)>(
+            r#"
+            select f.version, f.sha256, f.file_id
+            from apps a
+            join firmware_releases f on f.app_id = a.id
+            where a.slug = $1 and f.channel = $2
+            order by f.created_at desc
+            limit 1
+            "#,
+        )
+        .bind(&slug)
+        .bind(&channel)
+        .fetch_optional(&state.pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, (String, String, Uuid)>(
+            r#"
+            select f.version, f.sha256, f.file_id
+            from apps a
+            join app_assignments aa on aa.app_id = a.id
+            join firmware_releases f on f.app_id = a.id
+            where a.slug = $1 and aa.user_id = $2 and f.channel = $3
+            order by f.created_at desc
+            limit 1
+            "#,
+        )
+        .bind(&slug)
+        .bind(user.id)
+        .bind(&channel)
+        .fetch_optional(&state.pool)
+        .await?
+    };
+
+    let Some((version, sha256, file_id)) = record else {
+        return Err(AppError::new_plain(
+            StatusCode::NOT_FOUND,
+            "Firmware not found",
+        ));
+    };
+
+    let payload = serde_json::json!({
+        "app_slug": slug,
+        "channel": channel,
+        "version": version,
+        "sha256": sha256,
+        "download_url": format!("/apps/{}/firmware/latest/download?channel={}", slug, channel),
+        "file_id": file_id,
+    });
+    Ok((jar, axum::Json(payload)).into_response())
+}
+
+async fn download_latest_firmware(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Query(query): Query<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    let slug = sanitize_slug(&slug);
+    let channel = query
+        .get("channel")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(sanitize_slug)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "stable".to_string());
+
+    let file_id = if is_writer(&user) {
+        sqlx::query_scalar::<_, Uuid>(
+            r#"
+            select f.file_id
+            from apps a
+            join firmware_releases f on f.app_id = a.id
+            where a.slug = $1 and f.channel = $2
+            order by f.created_at desc
+            limit 1
+            "#,
+        )
+        .bind(&slug)
+        .bind(&channel)
+        .fetch_optional(&state.pool)
+        .await?
+    } else {
+        sqlx::query_scalar::<_, Uuid>(
+            r#"
+            select f.file_id
+            from apps a
+            join app_assignments aa on aa.app_id = a.id
+            join firmware_releases f on f.app_id = a.id
+            where a.slug = $1 and aa.user_id = $2 and f.channel = $3
+            order by f.created_at desc
+            limit 1
+            "#,
+        )
+        .bind(&slug)
+        .bind(user.id)
+        .bind(&channel)
+        .fetch_optional(&state.pool)
+        .await?
+    };
+
+    let Some(file_id) = file_id else {
+        return Err(AppError::new_plain(
+            StatusCode::NOT_FOUND,
+            "Firmware not found",
+        ));
+    };
+    stream_cached_file(&state, file_id, jar).await
+}
+
+async fn upload_app_package(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    mut multipart: Multipart,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+    let slug = sanitize_slug(&slug);
+
+    let app_id: Uuid = sqlx::query_scalar("select id from apps where slug = $1")
+        .bind(&slug)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "App not found"))?;
+
+    let mut version: Option<String> = None;
+    let mut os: Option<String> = None;
+    let mut arch: Option<String> = None;
+    let mut uploaded: Option<(Uuid, String)> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid upload payload"))?
+    {
+        match field.name() {
+            Some("os") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid os"))?;
+                os = Some(normalize_os(v.trim())?);
+            }
+            Some("arch") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid arch"))?;
+                arch = Some(normalize_arch(v.trim())?);
+            }
+            Some("version") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid version"))?;
+                let v = v.trim();
+                if v.is_empty() {
+                    return Err(AppError::new(StatusCode::BAD_REQUEST, "Version is required"));
+                }
+                version = Some(v.to_string());
+            }
+            Some("file") => {
+                let version = version
+                    .clone()
+                    .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Version is required"))?;
+                let os = os.clone().ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "OS is required"))?;
+                let arch = arch.clone().unwrap_or_else(|| "x86_64".to_string());
+                let prefix = format!(
+                    "apps/{}/packages/{}/{}/{}",
+                    sanitize_bucket(&slug),
+                    sanitize_bucket(&os),
+                    sanitize_bucket(&arch),
+                    sanitize_bucket(&version)
+                );
+                let result = save_upload_to_prefix(&state, field, &prefix, &["pkg"]).await?;
+                uploaded = Some((result.id, result.sha256));
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let Some((pkg_file_id, pkg_sha256)) = uploaded else {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "No file provided"));
+    };
+    let version = version.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Version is required"))?;
+    let os = os.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "OS is required"))?;
+    let arch = arch.unwrap_or_else(|| "x86_64".to_string());
+
+    let package_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        insert into app_packages (id, app_id, version, os, arch, pkg_file_id, pkg_sha256)
+        values ($1, $2, $3, $4, $5, $6, $7)
+        on conflict (app_id, version, os, arch)
+        do update set pkg_file_id = excluded.pkg_file_id, pkg_sha256 = excluded.pkg_sha256, created_at = now()
+        "#,
+    )
+    .bind(package_id)
+    .bind(app_id)
+    .bind(&version)
+    .bind(&os)
+    .bind(&arch)
+    .bind(pkg_file_id)
+    .bind(&pkg_sha256)
+    .execute(&state.pool)
+    .await?;
+
+    state.file_list_cache.invalidate_all();
+    state.file_by_id_cache.invalidate_all();
+    Ok((jar, Redirect::to("/apps/manage")).into_response())
+}
+
+async fn upload_firmware(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    mut multipart: Multipart,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+    let slug = sanitize_slug(&slug);
+
+    let app_id: Uuid = sqlx::query_scalar("select id from apps where slug = $1")
+        .bind(&slug)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "App not found"))?;
+
+    let mut version: Option<String> = None;
+    let mut channel: String = "stable".to_string();
+    let mut uploaded: Option<(Uuid, String)> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid upload payload"))?
+    {
+        match field.name() {
+            Some("version") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid version"))?;
+                let v = v.trim();
+                if v.is_empty() {
+                    return Err(AppError::new(StatusCode::BAD_REQUEST, "Version is required"));
+                }
+                version = Some(v.to_string());
+            }
+            Some("channel") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid channel"))?;
+                let v = sanitize_slug(v.trim());
+                if !v.is_empty() {
+                    channel = v;
+                }
+            }
+            Some("file") => {
+                let version = version
+                    .clone()
+                    .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Version is required"))?;
+                let prefix = format!(
+                    "apps/{}/firmware/{}/{}",
+                    sanitize_bucket(&slug),
+                    sanitize_bucket(&channel),
+                    sanitize_bucket(&version)
+                );
+                let result = save_upload_to_prefix(&state, field, &prefix, &["bin", "elf"]).await?;
+                uploaded = Some((result.id, result.sha256));
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let Some((file_id, sha256)) = uploaded else {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "No file provided"));
+    };
+    let version = version.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Version is required"))?;
+
+    let release_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        insert into firmware_releases (id, app_id, channel, version, file_id, sha256)
+        values ($1, $2, $3, $4, $5, $6)
+        on conflict (app_id, channel, version)
+        do update set file_id = excluded.file_id, sha256 = excluded.sha256, created_at = now()
+        "#,
+    )
+    .bind(release_id)
+    .bind(app_id)
+    .bind(&channel)
+    .bind(&version)
+    .bind(file_id)
+    .bind(&sha256)
+    .execute(&state.pool)
+    .await?;
+
+    state.file_list_cache.invalidate_all();
+    state.file_by_id_cache.invalidate_all();
+    Ok((jar, Redirect::to("/apps/manage")).into_response())
+}
+
+async fn list_tokens(State(state): State<AppState>, jar: SignedCookieJar) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+
+    let tokens = sqlx::query_as::<_, ApiTokenRow>(
+        "select id, user_id, name, created_at, last_used_at from api_tokens where user_id = $1 order by created_at desc",
+    )
+    .bind(user.id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let mut ctx = TeraContext::new();
+    ctx.insert("user_email", &user.email);
+    ctx.insert("tokens", &tokens);
+    ctx.insert("can_write", &is_writer(&user));
+    let html = render_template(&state, "tokens.html", ctx)?;
+    Ok((jar, html).into_response())
+}
+
+async fn create_token(
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Form(form): Form<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+
+    let name = form
+        .get("name")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Desktop app")
+        .to_string();
+
+    let mut token_bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut token_bytes);
+    let token = to_hex(&token_bytes);
+    let token_sha256 = sha256_hex(token.as_bytes());
+
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "insert into api_tokens (id, user_id, name, token_sha256) values ($1, $2, $3, $4)",
+    )
+    .bind(id)
+    .bind(user.id)
+    .bind(&name)
+    .bind(&token_sha256)
+    .execute(&state.pool)
+    .await?;
+
+    let tokens = sqlx::query_as::<_, ApiTokenRow>(
+        "select id, user_id, name, created_at, last_used_at from api_tokens where user_id = $1 order by created_at desc",
+    )
+    .bind(user.id)
+    .fetch_all(&state.pool)
+    .await?;
+
+    let mut ctx = TeraContext::new();
+    ctx.insert("user_email", &user.email);
+    ctx.insert("tokens", &tokens);
+    ctx.insert("new_token_name", &name);
+    ctx.insert("new_token", &token);
+    ctx.insert("can_write", &is_writer(&user));
+    ctx.insert("toast_success", "Created API token. Copy it now; it won’t be shown again.");
+    let html = render_template(&state, "tokens.html", ctx)?;
+    Ok((jar, html).into_response())
+}
+
+async fn revoke_token(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+
+    sqlx::query("delete from api_tokens where id = $1 and user_id = $2")
+        .bind(id)
+        .bind(user.id)
+        .execute(&state.pool)
+        .await?;
+
+    Ok((jar, Redirect::to("/tokens")).into_response())
+}
+
+async fn stream_cached_file(state: &AppState, id: Uuid, jar: SignedCookieJar) -> AppResult<Response> {
+    let file = fetch_file_by_id(state, id).await?;
+    let Some(file) = file else {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "File not found"));
+    };
+
+    let path = state.cache_dir.join(&file.local_path);
+    let path = tokio::fs::canonicalize(path)
+        .await
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "File missing on disk"))?;
+    if !path.starts_with(&state.cache_dir) {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "Invalid file location",
+        ));
+    }
+
+    let file_handle = File::open(&path)
+        .await
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "File missing on disk"))?;
+    let stream = ReaderStream::new(file_handle);
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", file.filename),
+        )
+        .body(Body::from_stream(stream))
+        .map_err(AppError::from)?;
+
+    Ok((jar, response).into_response())
+}
+
+async fn api_user_from_bearer(state: &AppState, headers: &HeaderMap) -> AppResult<(User, Uuid)> {
+    let token = extract_bearer(headers).ok_or_else(|| {
+        AppError::new_plain(StatusCode::UNAUTHORIZED, "Bearer token required")
+    })?;
+    if token.len() < 24 {
+        return Err(AppError::new_plain(
+            StatusCode::UNAUTHORIZED,
+            "Invalid bearer token",
+        ));
+    }
+    let token_sha256 = sha256_hex(token.as_bytes());
+    let record = sqlx::query_as::<_, ApiUserAuthRow>(
+        r#"
+        select t.id as token_id,
+               u.id,
+               u.email,
+               u.password_hash,
+               u.permission,
+               u.reset_token,
+               u.reset_token_expires,
+               u.must_reset
+        from api_tokens t
+        join users u on u.id = t.user_id
+        where t.token_sha256 = $1
+        "#,
+    )
+    .bind(&token_sha256)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    let Some(row) = record else {
+        return Err(AppError::new_plain(
+            StatusCode::UNAUTHORIZED,
+            "Invalid bearer token",
+        ));
+    };
+    let token_id = row.token_id;
+    let user = User {
+        id: row.id,
+        email: row.email,
+        password_hash: row.password_hash,
+        permission: row.permission,
+        reset_token: row.reset_token,
+        reset_token_expires: row.reset_token_expires,
+        must_reset: row.must_reset,
+    };
+
+    let _ = sqlx::query("update api_tokens set last_used_at = now() where id = $1")
+        .bind(token_id)
+        .execute(&state.pool)
+        .await;
+
+    Ok((user, token_id))
+}
+
+async fn api_latest_package(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let (user, _token_id) = api_user_from_bearer(&state, &headers).await?;
+    let slug = sanitize_slug(&slug);
+
+    let (os, arch) = parse_target_query(&query)
+        .or_else(|| detect_target_from_user_agent(&headers))
+        .unwrap_or_else(|| ("windows".to_string(), "x86_64".to_string()));
+
+    let record = sqlx::query_as::<_, (String, String, String, String, Uuid)>(
+        r#"
+        select p.version, p.os, p.arch, p.pkg_sha256, p.pkg_file_id
+        from apps a
+        join app_assignments aa on aa.app_id = a.id
+        join app_packages p on p.app_id = a.id
+        where a.slug = $1 and aa.user_id = $2 and p.os = $3 and (p.arch = $4 or p.arch = 'any')
+        order by (p.arch = $4) desc, p.created_at desc
+        limit 1
+        "#,
+    )
+    .bind(&slug)
+    .bind(user.id)
+    .bind(&os)
+    .bind(&arch)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    let Some((version, os, arch, pkg_sha256, _pkg_file_id)) = record else {
+        return Err(AppError::new_plain(StatusCode::NOT_FOUND, "Package not found"));
+    };
+
+    let payload = serde_json::json!({
+        "app_slug": slug,
+        "os": os,
+        "arch": arch,
+        "version": version,
+        "pkg_sha256": pkg_sha256,
+        "download_url": format!("/api/apps/{}/package/download?os={}&arch={}", slug, os, arch),
+    });
+    Ok(axum::Json(payload).into_response())
+}
+
+async fn api_download_package(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let (user, _token_id) = api_user_from_bearer(&state, &headers).await?;
+    let slug = sanitize_slug(&slug);
+    let (os, arch) = parse_target_query(&query)
+        .or_else(|| detect_target_from_user_agent(&headers))
+        .unwrap_or_else(|| ("windows".to_string(), "x86_64".to_string()));
+
+    let version_filter = query.get("version").map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+
+    let file_id = match version_filter {
+        Some(version) => {
+            sqlx::query_scalar::<_, Uuid>(
+                r#"
+                select p.pkg_file_id
+                from apps a
+                join app_assignments aa on aa.app_id = a.id
+                join app_packages p on p.app_id = a.id
+                where a.slug = $1 and aa.user_id = $2 and p.os = $3 and (p.arch = $4 or p.arch = 'any') and p.version = $5
+                order by (p.arch = $4) desc, p.created_at desc
+                limit 1
+                "#,
+            )
+            .bind(&slug)
+            .bind(user.id)
+            .bind(&os)
+            .bind(&arch)
+            .bind(&version)
+            .fetch_optional(&state.pool)
+            .await?
+        }
+        None => {
+            sqlx::query_scalar::<_, Uuid>(
+                r#"
+                select p.pkg_file_id
+                from apps a
+                join app_assignments aa on aa.app_id = a.id
+                join app_packages p on p.app_id = a.id
+                where a.slug = $1 and aa.user_id = $2 and p.os = $3 and (p.arch = $4 or p.arch = 'any')
+                order by (p.arch = $4) desc, p.created_at desc
+                limit 1
+                "#,
+            )
+            .bind(&slug)
+            .bind(user.id)
+            .bind(&os)
+            .bind(&arch)
+            .fetch_optional(&state.pool)
+            .await?
+        }
+    };
+
+    let Some(file_id) = file_id else {
+        return Err(AppError::new_plain(StatusCode::NOT_FOUND, "Package not found"));
+    };
+
+    let file = fetch_file_by_id(&state, file_id).await?;
+    let Some(file) = file else {
+        return Err(AppError::new_plain(StatusCode::NOT_FOUND, "File not found"));
+    };
+
+    let path = state.cache_dir.join(&file.local_path);
+    let path = tokio::fs::canonicalize(path)
+        .await
+        .map_err(|_| AppError::new_plain(StatusCode::NOT_FOUND, "File missing on disk"))?;
+    if !path.starts_with(&state.cache_dir) {
+        return Err(AppError::new_plain(
+            StatusCode::BAD_REQUEST,
+            "Invalid file location",
+        ));
+    }
+
+    let file_handle = File::open(&path)
+        .await
+        .map_err(|_| AppError::new_plain(StatusCode::NOT_FOUND, "File missing on disk"))?;
+    let stream = ReaderStream::new(file_handle);
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", file.filename),
+        )
+        .body(Body::from_stream(stream))
+        .map_err(AppError::from)?;
+
+    Ok(response)
+}
+
+struct UploadResult {
+    id: Uuid,
+    sha256: String,
+}
+
+async fn save_upload_to_prefix(
+    state: &AppState,
+    mut field: axum::extract::multipart::Field<'_>,
+    prefix: &str,
+    allowed_exts: &[&str],
+) -> AppResult<UploadResult> {
+    let file_name = field
+        .file_name()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "upload.bin".to_string());
+    let clean = sanitize_filename(&file_name);
+    let ext = std::path::Path::new(&clean)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if !allowed_exts.iter().any(|allowed| allowed.eq_ignore_ascii_case(&ext)) {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "Invalid file type .{} (allowed: {})",
+                ext,
+                allowed_exts.join(", ")
+            ),
+        ));
+    }
+
+    let file_id = Uuid::new_v4();
+    let stored_name = format!("{}-{}", file_id, clean);
+    let relative_path = format!("{}/{}", sanitize_bucket(prefix), stored_name);
+    let dest_path = state.cache_dir.join(&relative_path);
+
+    if let Some(parent) = dest_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| {
+                AppError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Could not create directory {}: {}", parent.display(), e),
+                )
+            })?;
+    }
+
+    let mut dest = File::create(&dest_path)
+        .await
+        .map_err(|e| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not create file {}: {}", dest_path.display(), e),
+            )
+        })?;
+    let mut size: i64 = 0;
+    let mut hasher = Sha256::new();
+
+    while let Some(chunk) = field
+        .chunk()
+        .await
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Failed reading upload"))?
+    {
+        size += chunk.len() as i64;
+        hasher.update(&chunk);
+        dest.write_all(&chunk)
+            .await
+            .map_err(|e| {
+                AppError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Failed writing upload to {}: {}", dest_path.display(), e),
+                )
+            })?;
+    }
+
+    let sha256 = to_hex(&hasher.finalize());
+
+    sqlx::query(
+        "insert into cached_files (id, filename, local_path, size_bytes) values ($1, $2, $3, $4)",
+    )
+    .bind(file_id)
+    .bind(clean)
+    .bind(relative_path)
+    .bind(size)
+    .execute(&state.pool)
+    .await?;
+
+    Ok(UploadResult { id: file_id, sha256 })
+}
+
+fn sanitize_slug(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        let mapped = match ch {
+            'a'..='z' | '0'..='9' | '-' => Some(ch),
+            'A'..='Z' => Some(ch.to_ascii_lowercase()),
+            ' ' | '_' => Some('-'),
+            _ => None,
+        };
+        if let Some(ch) = mapped {
+            if ch == '-' && out.ends_with('-') {
+                continue;
+            }
+            out.push(ch);
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    to_hex(&hasher.finalize())
+}
+
+fn normalize_os(value: &str) -> AppResult<String> {
+    let v = value.trim().to_ascii_lowercase();
+    match v.as_str() {
+        "windows" | "win" | "win32" | "win64" => Ok("windows".to_string()),
+        "linux" => Ok("linux".to_string()),
+        "macos" | "osx" | "darwin" => Ok("macos".to_string()),
+        _ => Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "Invalid OS (use windows|linux|macos)",
+        )),
+    }
+}
+
+fn normalize_arch(value: &str) -> AppResult<String> {
+    let v = value.trim().to_ascii_lowercase();
+    match v.as_str() {
+        "" => Ok("x86_64".to_string()),
+        "x86_64" | "amd64" | "x64" => Ok("x86_64".to_string()),
+        "aarch64" | "arm64" => Ok("aarch64".to_string()),
+        "any" => Ok("any".to_string()),
+        _ => Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "Invalid arch (use x86_64|aarch64|any)",
+        )),
+    }
+}
+
+fn parse_target_query(query: &HashMap<String, String>) -> Option<(String, String)> {
+    if let Some(target) = query.get("target").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let mut parts = target.splitn(2, ':');
+        let os_raw = parts.next()?.trim();
+        let arch_raw = parts.next().unwrap_or("x86_64").trim();
+        let os = normalize_os(os_raw).ok()?;
+        let arch = normalize_arch(arch_raw).ok()?;
+        return Some((os, arch));
+    }
+    let os = query.get("os").map(|s| s.trim()).filter(|s| !s.is_empty())?;
+    let os = normalize_os(os).ok()?;
+    let arch = query
+        .get("arch")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("x86_64");
+    let arch = normalize_arch(arch).ok()?;
+    Some((os, arch))
+}
+
+fn detect_target_from_user_agent(headers: &HeaderMap) -> Option<(String, String)> {
+    let ua = headers.get(header::USER_AGENT)?.to_str().ok()?.to_ascii_lowercase();
+    let os = if ua.contains("windows") {
+        "windows"
+    } else if ua.contains("mac os x") || ua.contains("macintosh") {
+        "macos"
+    } else if ua.contains("linux") {
+        "linux"
+    } else {
+        return None;
+    };
+
+    let arch = if ua.contains("aarch64") || ua.contains("arm64") {
+        "aarch64"
+    } else if ua.contains("x86_64")
+        || ua.contains("amd64")
+        || ua.contains("x64")
+        || ua.contains("win64")
+    {
+        "x86_64"
+    } else {
+        "x86_64"
+    };
+
+    Some((os.to_string(), arch.to_string()))
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{:02x}", byte);
+    }
+    out
 }
 
 async fn current_user(state: &AppState, jar: &SignedCookieJar) -> AppResult<Option<User>> {
@@ -1864,8 +3178,10 @@ async fn create_bucket(
     };
     if !is_writer(&user) {
         warn!(user_id = %user.id, email = %user.email, "create_bucket: forbidden (not writer)");
-        return render_portal_with_toast(&state, &user, Some("Writer permission required"), None)
-            .await;
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
     }
 
     let project = sanitize_bucket(&form.project);

@@ -109,7 +109,7 @@
                                 <tr>
                                     <td class="truncate">{{ bucket.project }}/{{ bucket.bucket }}</td>
                                     <td class="token"><code>{{ bucket.token }}</code></td>
-                                    <td class="num">{{ bucket.created_at }}</td>
+                                    <td class="num truncate"><span title="{{ bucket.created_at }}">{{ bucket.created_at }}</span></td>
                                     <td class="actions">
                                         <form method="post" action="/buckets/{{ bucket.id }}/delete" onsubmit="return confirm('Delete this bucket and its files?');">
                                             <button class="secondary icon-btn" type="submit" aria-label="Delete bucket">
@@ -158,7 +158,7 @@
                     <td class="truncate">{{ file.filename }}</td>
                     <td class="truncate"><code>{{ file.bucket }}</code></td>
                     <td class="num">{% if file.size %}{{ file.size }}{% else %}—{% endif %}</td>
-                    <td class="num">{{ file.created_at }}</td>
+                    <td class="num truncate"><span title="{{ file.created_at }}">{{ file.created_at }}</span></td>
                     <td class="actions">
                         <div class="action-group">
                             <a class="pill-action icon-link" href="/download/{{ file.id }}">

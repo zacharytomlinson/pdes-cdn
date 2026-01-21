@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% block title %}App Store{% endblock title %}
+{% block header_actions %}
+    <div class="profile-chip">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 12a5 5 0 100-10 5 5 0 000 10zM4 20a8 8 0 0116 0" />
+        </svg>
+        <span>{{ user_email | default(value="unknown") }}</span>
+        <a class="pill-action icon-link" href="/portal" aria-label="Portal">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 12l9-9 9 9" />
+                <path d="M9 21V9h6v12" />
+            </svg>
+        </a>
+        <a class="pill-action icon-link" href="/tokens" aria-label="API tokens">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M7 10V8a5 5 0 0 1 10 0v2" />
+                <path d="M5 10h14v10H5z" />
+            </svg>
+        </a>
+        <a class="pill-action icon-link" href="/logout" aria-label="Logout">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+        </a>
+    </div>
+{% endblock header_actions %}
+{% block content %}
+<div class="page-title">
+    <h1>App Store</h1>
+    <p class="muted">Create apps, upload .pkg installers, attach firmware, and assign apps to users.</p>
+</div>
+
+<div class="grid-2">
+    <section class="card">
+        <h2 style="margin-top: 0;">Create app</h2>
+        <form method="post" action="/apps/create">
+            <div class="stack">
+                <label for="slug">App slug</label>
+                <input id="slug" name="slug" type="text" required placeholder="my-app">
+                <span class="muted">Stable ID (URLs, assignments). Use lowercase + dashes.</span>
+            </div>
+            <div class="stack">
+                <label for="name">Display name</label>
+                <input id="name" name="name" type="text" required placeholder="My App">
+            </div>
+            <div class="stack">
+                <label for="description">Description</label>
+                <input id="description" name="description" type="text" placeholder="What does this do?">
+            </div>
+            <div class="inline-actions">
+                <button type="submit" class="icon-btn btn-compact">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="9" />
+                        <line x1="12" y1="8" x2="12" y2="16" />
+                        <line x1="8" y1="12" x2="16" y2="12" />
+                    </svg>
+                    Create
+                </button>
+            </div>
+        </form>
+    </section>
+
+    <section class="card">
+        <h2 style="margin-top: 0;">Notes</h2>
+        <ul class="muted" style="margin: 0; padding-left: 18px;">
+            <li>.pkg uploads must use the <code>.pkg</code> extension (tar.gz renamed).</li>
+            <li>Firmware uploads are accepted as <code>.bin</code> or <code>.elf</code>.</li>
+            <li>Viewers only see assigned apps and can only download via the app endpoints.</li>
+        </ul>
+    </section>
+</div>
+
+{% if apps | length == 0 %}
+    <section class="card" style="margin-top: 18px;">
+        <h2 style="margin-top: 0;">Apps</h2>
+        <p class="muted">No apps yet.</p>
+    </section>
+{% else %}
+    <div class="stack-lg" style="margin-top: 18px;">
+        {% for app in apps %}
+            <section class="card">
+                <div class="inline-actions" style="align-items: flex-start;">
+                    <div style="min-width: 0;">
+                        <h2 style="margin: 0;">{{ app.name }}</h2>
+                        <div class="muted" style="margin-top: 4px;">
+                            <code>{{ app.slug }}</code>
+                            · Assignments: {{ app.assignment_count }}
+                            · Package: {% if app.latest_pkg_version %}{{ app.latest_pkg_os | default(value="unknown") }} {{ app.latest_pkg_arch | default(value="x86_64") }} {{ app.latest_pkg_version }}{% else %}—{% endif %}
+                            · Firmware: {% if app.latest_fw_version %}{{ app.latest_fw_channel | default(value="stable") }} {{ app.latest_fw_version }}{% else %}—{% endif %}
+                        </div>
+                        {% if app.description %}
+                            <div class="muted" style="margin-top: 8px;">{{ app.description }}</div>
+                        {% endif %}
+                    </div>
+                    <div class="action-group">
+                        {% if app.latest_pkg_version %}
+                            <a class="pill-action icon-link" href="/apps/{{ app.slug }}/download">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                    <polyline points="7 10 12 15 17 10" />
+                                    <line x1="12" y1="15" x2="12" y2="3" />
+                                </svg>
+                                Latest pkg
+                            </a>
+                        {% else %}
+                            <span class="muted">No pkg uploaded</span>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <div class="grid-2" style="margin-top: 14px;">
+                    <div class="stack">
+                        <h3 style="margin: 0;">Upload package</h3>
+                        <form method="post" action="/apps/{{ app.slug }}/package/upload" enctype="multipart/form-data">
+                            <div class="stack">
+                                <label for="pkg-os-{{ app.slug }}">OS</label>
+                                <select id="pkg-os-{{ app.slug }}" name="os" required>
+                                    <option value="windows" selected>Windows</option>
+                                    <option value="linux">Linux</option>
+                                    <option value="macos">macOS</option>
+                                </select>
+                            </div>
+                            <div class="stack">
+                                <label for="pkg-arch-{{ app.slug }}">Arch</label>
+                                <select id="pkg-arch-{{ app.slug }}" name="arch" required>
+                                    <option value="x86_64" selected>x86_64</option>
+                                    <option value="aarch64">aarch64</option>
+                                </select>
+                            </div>
+                            <div class="stack">
+                                <label for="pkg-version-{{ app.slug }}">Version</label>
+                                <input id="pkg-version-{{ app.slug }}" name="version" type="text" required placeholder="1.2.3">
+                            </div>
+                            <div class="stack">
+                                <label for="pkg-file-{{ app.slug }}">.pkg file</label>
+                                <input id="pkg-file-{{ app.slug }}" name="file" type="file" accept=".pkg" required>
+                            </div>
+                            <div class="inline-actions">
+                                <button type="submit" class="icon-btn btn-compact">
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+                                        <polyline points="7 9 12 4 17 9" />
+                                        <line x1="12" y1="4" x2="12" y2="16" />
+                                    </svg>
+                                    Upload pkg
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <div class="stack">
+                        <h3 style="margin: 0;">Upload firmware</h3>
+                        <form method="post" action="/apps/{{ app.slug }}/firmware/upload" enctype="multipart/form-data">
+                            <div class="stack">
+                                <label for="fw-channel-{{ app.slug }}">Channel</label>
+                                <input id="fw-channel-{{ app.slug }}" name="channel" type="text" value="stable" placeholder="stable">
+                            </div>
+                            <div class="stack">
+                                <label for="fw-version-{{ app.slug }}">Version</label>
+                                <input id="fw-version-{{ app.slug }}" name="version" type="text" required placeholder="2026.01.21">
+                            </div>
+                            <div class="stack">
+                                <label for="fw-file-{{ app.slug }}">Firmware file</label>
+                                <input id="fw-file-{{ app.slug }}" name="file" type="file" accept=".bin,.elf" required>
+                            </div>
+                            <div class="inline-actions">
+                                <button type="submit" class="icon-btn btn-compact">
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+                                        <polyline points="7 9 12 4 17 9" />
+                                        <line x1="12" y1="4" x2="12" y2="16" />
+                                    </svg>
+                                    Upload firmware
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="stack" style="margin-top: 14px;">
+                    <h3 style="margin: 0;">Assign to user</h3>
+                    <form method="post" action="/apps/{{ app.slug }}/assign">
+                        <div class="stack">
+                            <label for="assign-user-{{ app.slug }}">User</label>
+                            <select id="assign-user-{{ app.slug }}" name="user_id" required>
+                                <option value="" selected disabled>Select a user…</option>
+                                {% for u in users %}
+                                    {% if u.permission == "reader" %}
+                                        <option value="{{ u.id }}">{{ u.email }}</option>
+                                    {% endif %}
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div class="inline-actions">
+                            <button type="submit" class="icon-btn btn-compact">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="12" cy="12" r="9" />
+                                    <line x1="12" y1="8" x2="12" y2="16" />
+                                    <line x1="8" y1="12" x2="16" y2="12" />
+                                </svg>
+                                Assign
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </section>
+        {% endfor %}
+    </div>
+{% endif %}
+{% endblock content %}
