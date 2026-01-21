@@ -375,6 +375,9 @@ struct AppManageView {
     #[sqlx(skip)]
     #[serde(default)]
     assigned_users: Vec<AssignedUserView>,
+    #[sqlx(skip)]
+    #[serde(default)]
+    targets: Vec<AppTargetView>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -394,24 +397,6 @@ struct AppCardView {
     can_download: bool,
     icon_text: String,
     targets: Vec<AppTargetView>,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-struct OrgAssignmentsView {
-    org: String,
-    users: Vec<UserAssignmentsView>,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-struct UserAssignmentsView {
-    email: String,
-    apps: Vec<UserAppView>,
-}
-
-#[derive(Debug, Clone, FromRow, serde::Serialize)]
-struct UserAppView {
-    slug: String,
-    name: String,
 }
 
 #[tokio::main]
@@ -1625,6 +1610,29 @@ async fn render_apps_manage_with_toast(
     .fetch_all(&state.pool)
     .await?;
 
+    let target_rows = sqlx::query_as::<_, (String, String, String, String)>(
+        r#"
+        select a.slug, p.os, p.arch, p.version
+        from apps a
+        join (
+            select distinct on (app_id, os, arch) app_id, os, arch, version, created_at
+            from app_packages
+            order by app_id, os, arch, created_at desc
+        ) p on p.app_id = a.id
+        order by a.created_at desc, p.os, p.arch
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let mut targets_map: std::collections::BTreeMap<String, Vec<AppTargetView>> =
+        std::collections::BTreeMap::new();
+    for (slug, os, arch, version) in target_rows {
+        targets_map
+            .entry(slug)
+            .or_default()
+            .push(AppTargetView { os, arch, version });
+    }
+
     let assigned_rows = sqlx::query_as::<_, (String, Uuid, String)>(
         r#"
         select a.slug, u.id, u.email
@@ -1656,56 +1664,13 @@ async fn render_apps_manage_with_toast(
             .map(|c| c.to_ascii_uppercase().to_string())
             .unwrap_or_else(|| "?".to_string());
         app.assigned_users = assigned_map.remove(&app.slug).unwrap_or_default();
+        app.targets = targets_map.remove(&app.slug).unwrap_or_default();
     }
 
     let users =
         sqlx::query_as::<_, UserBrief>("select id, email, permission from users order by email")
             .fetch_all(&state.pool)
             .await?;
-
-    let assignments = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
-        r#"
-        select u.email, a.slug, a.name
-        from users u
-        left join app_assignments aa on aa.user_id = u.id
-        left join apps a on a.id = aa.app_id
-        where u.permission = 'reader'
-        order by u.email, a.name
-        "#,
-    )
-    .fetch_all(&state.pool)
-    .await?;
-
-    let mut org_map: std::collections::BTreeMap<
-        String,
-        std::collections::BTreeMap<String, Vec<UserAppView>>,
-    > = std::collections::BTreeMap::new();
-    for (email, slug, name) in assignments {
-        let org = email
-            .split('@')
-            .nth(1)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("unknown")
-            .to_ascii_lowercase();
-        let apps_for_user = org_map.entry(org).or_default().entry(email).or_default();
-        if let (Some(slug), Some(name)) = (slug, name) {
-            if !slug.is_empty() {
-                apps_for_user.push(UserAppView { slug, name });
-            }
-        }
-    }
-    let mut org_assignments: Vec<OrgAssignmentsView> = Vec::new();
-    for (org, users) in org_map {
-        let mut user_views: Vec<UserAssignmentsView> = users
-            .into_iter()
-            .map(|(email, apps)| UserAssignmentsView { email, apps })
-            .collect();
-        user_views.sort_by(|a, b| a.email.cmp(&b.email));
-        org_assignments.push(OrgAssignmentsView {
-            org,
-            users: user_views,
-        });
-    }
 
     let edit_app = edit_app_slug
         .as_deref()
@@ -1716,7 +1681,6 @@ async fn render_apps_manage_with_toast(
     ctx.insert("user_email", &user.email);
     ctx.insert("apps", &apps);
     ctx.insert("users", &users);
-    ctx.insert("org_assignments", &org_assignments);
     ctx.insert("can_write", &true);
     ctx.insert("open_app_slug", &open_app_slug);
     ctx.insert("edit_app", &edit_app);

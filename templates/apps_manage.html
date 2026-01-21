@@ -140,6 +140,39 @@
                     <p class="muted app-desc-full">{{ app.description }}</p>
                     {% endif %}
 
+                    <div class="app-actions">
+                        {% if app.targets is defined and app.targets | length > 0 %}
+                            {% if app.targets | length == 1 %}
+                                {% set t = app.targets[0] %}
+                                <a class="pill-action icon-link" href="/apps/{{ app.slug }}/download/bootstrap?target={{ t.os }}:{{ t.arch }}" aria-label="Download package">
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                        <polyline points="7 10 12 15 17 10"/>
+                                        <line x1="12" y1="15" x2="12" y2="3"/>
+                                    </svg>
+                                    Download ({{ t.os | upper }} {{ t.arch }})
+                                </a>
+                            {% else %}
+                                <form method="get" action="/apps/{{ app.slug }}/download/bootstrap" class="app-download-form">
+                                    <select name="target" aria-label="Select download target">
+                                        {% for t in app.targets %}
+                                            <option value="{{ t.os }}:{{ t.arch }}">{{ t.os | upper }} ({{ t.arch }}) · {{ t.version }}</option>
+                                        {% endfor %}
+                                    </select>
+                                    <button type="submit" class="icon-btn btn-compact" aria-label="Download">
+                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                            <polyline points="7 10 12 15 17 10"/>
+                                            <line x1="12" y1="15" x2="12" y2="3"/>
+                                        </svg>
+                                    </button>
+                                </form>
+                            {% endif %}
+                        {% else %}
+                            <span class="muted">No package uploaded yet.</span>
+                        {% endif %}
+                    </div>
+
                     <div class="stack">
                         <div class="inline-actions">
                             <h3 style="margin: 0;">Assigned users</h3>
@@ -401,47 +434,6 @@
             </button>
         </div>
     </form>
-</section>
-
-<section class="card" style="margin-top: 18px;">
-    <h2 style="margin-top: 0;">Notes</h2>
-    <ul class="muted" style="margin: 0; padding-left: 18px;">
-        <li>.pkg uploads must use the <code>.pkg</code> extension (tar.gz renamed).</li>
-        <li>Firmware uploads are accepted as <code>.bin</code> or <code>.elf</code>.</li>
-        <li>Viewers only see assigned apps and can only download via the app endpoints.</li>
-    </ul>
-    <details style="margin-top: 12px;">
-        <summary>Assignment overview (by email domain)</summary>
-        {% if org_assignments is defined and org_assignments | length > 0 %}
-        <div class="stack-lg" style="margin-top: 12px; gap: 12px;">
-            {% for org in org_assignments %}
-            <details>
-                <summary>{{ org.org }}</summary>
-                <div class="stack" style="margin-top: 10px;">
-                    {% for u in org.users %}
-                    <div class="inline-actions" style="gap: 12px; align-items: flex-start;">
-                        <div style="min-width: 0;">
-                            <div class="truncate"><code>{{ u.email }}</code></div>
-                        </div>
-                        <div class="action-group" style="justify-content: flex-end;">
-                            {% if u.apps | length == 0 %}
-                            <span class="muted">No apps assigned</span>
-                            {% else %}
-                            {% for a in u.apps %}
-                            <span class="badge">{{ a.name }}</span>
-                            {% endfor %}
-                            {% endif %}
-                        </div>
-                    </div>
-                    {% endfor %}
-                </div>
-            </details>
-            {% endfor %}
-        </div>
-        {% else %}
-        <p class="muted">No reader users found.</p>
-        {% endif %}
-    </details>
 </section>
 
 <script>
