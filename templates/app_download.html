@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Download{% endblock title %}
+{% block header_actions %}
+    <div class="profile-chip">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 12a5 5 0 100-10 5 5 0 000 10zM4 20a8 8 0 0116 0" />
+        </svg>
+        <span>{{ user_email | default(value="unknown") }}</span>
+        <a class="pill-action icon-link" href="/tokens" aria-label="API tokens">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M7 10V8a5 5 0 0 1 10 0v2" />
+                <path d="M5 10h14v10H5z" />
+            </svg>
+        </a>
+        <a class="pill-action icon-link" href="/logout" aria-label="Logout">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+        </a>
+    </div>
+{% endblock header_actions %}
+{% block content %}
+<div class="page-title">
+    <h1>Download</h1>
+    <p class="muted">{{ app_name | default(value=app_slug) }} · {{ os | upper }} ({{ arch }}) · {{ pkg_version }}</p>
+</div>
+
+<section class="card">
+    <h2 style="margin-top: 0;">Update token</h2>
+    <p class="muted" style="margin-top: 6px;">Copy this token now (shown once). Paste it into the desktop app to enable update checks and firmware downloads.</p>
+    <div class="alert success" style="margin-top: 12px;">
+        <div><strong>{{ new_token_name | default(value="Token") }}</strong></div>
+        <div style="margin-top: 8px;"><code style="user-select: all;">{{ new_token }}</code></div>
+    </div>
+    <div class="muted" style="margin-top: 10px;">
+        You can revoke this later from <a href="/tokens">API tokens</a>.
+    </div>
+</section>
+
+<section class="card" style="margin-top: 16px;">
+    <h2 style="margin-top: 0;">Installer download</h2>
+    <div class="inline-actions" style="margin-top: 10px;">
+        <a class="icon-btn" href="{{ download_url }}" target="_blank" rel="noopener">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            Download
+        </a>
+        <a class="secondary icon-btn" href="/apps" aria-label="Back to apps">
+            Back
+        </a>
+    </div>
+</section>
+{% endblock content %}

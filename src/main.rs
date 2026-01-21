@@ -520,6 +520,7 @@ async fn main() -> AppResult<()> {
         .route("/apps/manage", get(apps_manage))
         .route("/apps/create", post(create_app))
         .route("/apps/:slug/assign", post(assign_app))
+        .route("/apps/:slug/download/bootstrap", get(download_bootstrap))
         .route("/apps/:slug/download", get(download_latest_pkg))
         .route("/apps/:slug/icon", get(app_icon))
         .route("/apps/:slug/firmware/latest", get(latest_firmware_json))
@@ -547,6 +548,14 @@ async fn main() -> AppResult<()> {
         .route(
             "/api/apps/:slug/package/download",
             get(api_download_package),
+        )
+        .route(
+            "/api/apps/:slug/firmware/latest",
+            get(api_latest_firmware),
+        )
+        .route(
+            "/api/apps/:slug/firmware/download",
+            get(api_download_firmware),
         )
         .route("/download/:id", get(download_file))
         .layer(DefaultBodyLimit::max(max_upload_bytes))
@@ -1785,6 +1794,125 @@ async fn download_latest_pkg(
     stream_cached_file(&state, file_id, jar).await
 }
 
+async fn download_bootstrap(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        warn!(app_slug = %slug, "download_bootstrap: unauthenticated, redirecting to login");
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    let slug = sanitize_slug(&slug);
+
+    let requested = parse_target_query(&query).or_else(|| detect_target_from_user_agent(&headers));
+
+    let record: Option<(String, Uuid, String, String, String)> = match (is_writer(&user), requested)
+    {
+        (true, Some((os, arch))) => {
+            sqlx::query_as::<_, (String, Uuid, String, String, String)>(
+                r#"
+                select a.name, p.pkg_file_id, p.version, p.os, p.arch
+                from apps a
+                join app_packages p on p.app_id = a.id
+                where a.slug = $1 and p.os = $2 and (p.arch = $3 or p.arch = 'any')
+                order by (p.arch = $3) desc, p.created_at desc
+                limit 1
+                "#,
+            )
+            .bind(&slug)
+            .bind(&os)
+            .bind(&arch)
+            .fetch_optional(&state.pool)
+            .await?
+        }
+        (false, Some((os, arch))) => {
+            sqlx::query_as::<_, (String, Uuid, String, String, String)>(
+                r#"
+                select a.name, p.pkg_file_id, p.version, p.os, p.arch
+                from apps a
+                join app_assignments aa on aa.app_id = a.id
+                join app_packages p on p.app_id = a.id
+                where a.slug = $1 and aa.user_id = $2 and p.os = $3 and (p.arch = $4 or p.arch = 'any')
+                order by (p.arch = $4) desc, p.created_at desc
+                limit 1
+                "#,
+            )
+            .bind(&slug)
+            .bind(user.id)
+            .bind(&os)
+            .bind(&arch)
+            .fetch_optional(&state.pool)
+            .await?
+        }
+        (true, None) => {
+            sqlx::query_as::<_, (String, Uuid, String, String, String)>(
+                r#"
+                select a.name, p.pkg_file_id, p.version, p.os, p.arch
+                from apps a
+                join app_packages p on p.app_id = a.id
+                where a.slug = $1
+                order by p.created_at desc
+                limit 1
+                "#,
+            )
+            .bind(&slug)
+            .fetch_optional(&state.pool)
+            .await?
+        }
+        (false, None) => {
+            sqlx::query_as::<_, (String, Uuid, String, String, String)>(
+                r#"
+                select a.name, p.pkg_file_id, p.version, p.os, p.arch
+                from apps a
+                join app_assignments aa on aa.app_id = a.id
+                join app_packages p on p.app_id = a.id
+                where a.slug = $1 and aa.user_id = $2
+                order by p.created_at desc
+                limit 1
+                "#,
+            )
+            .bind(&slug)
+            .bind(user.id)
+            .fetch_optional(&state.pool)
+            .await?
+        }
+    };
+
+    let Some((app_name, _pkg_file_id, pkg_version, os, arch)) = record else {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "Package not found"));
+    };
+
+    let token_name = format!("Bootstrap {} ({}/{})", slug, os, arch);
+    let token = mint_api_token_for_user(&state, user.id, &token_name).await?;
+
+    let download_url = format!(
+        "/apps/{}/download?target={}:{}",
+        slug, os, arch
+    );
+
+    let mut ctx = TeraContext::new();
+    ctx.insert("user_email", &user.email);
+    ctx.insert("app_slug", &slug);
+    ctx.insert("app_name", &app_name);
+    ctx.insert("os", &os);
+    ctx.insert("arch", &arch);
+    ctx.insert("pkg_version", &pkg_version);
+    ctx.insert("download_url", &download_url);
+    ctx.insert("new_token_name", &token_name);
+    ctx.insert("new_token", &token);
+    ctx.insert(
+        "toast_success",
+        "Copy this token now; it won’t be shown again. Paste it into the desktop app to enable update checks.",
+    );
+
+    let html = render_template(&state, "app_download.html", ctx)?;
+    Ok((jar, html).into_response())
+}
+
 async fn app_icon(
     Path(slug): Path<String>,
     State(state): State<AppState>,
@@ -2274,7 +2402,7 @@ async fn build_app_package(
         "summary": &summary,
         "icon": { "path": icon_path_in_pkg },
         "installer": { "type": installer_type, "path": format!("installers/{}", installer_name) },
-        "firmware": { "channel": "stable", "latest_url": format!("/apps/{}/firmware/latest?channel=stable", slug) }
+        "firmware": { "channel": "stable", "latest_url": format!("/api/apps/{}/firmware/latest?channel=stable", slug) }
     })
     .to_string();
     tokio::fs::write(work_dir.join("manifest.json"), manifest)
@@ -2470,21 +2598,7 @@ async fn create_token(
         .unwrap_or("Desktop app")
         .to_string();
 
-    let mut token_bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut token_bytes);
-    let token = to_hex(&token_bytes);
-    let token_sha256 = sha256_hex(token.as_bytes());
-
-    let id = Uuid::new_v4();
-    sqlx::query(
-        "insert into api_tokens (id, user_id, name, token_sha256) values ($1, $2, $3, $4)",
-    )
-    .bind(id)
-    .bind(user.id)
-    .bind(&name)
-    .bind(&token_sha256)
-    .execute(&state.pool)
-    .await?;
+    let token = mint_api_token_for_user(&state, user.id, &name).await?;
 
     let tokens = sqlx::query_as::<_, ApiTokenRow>(
         "select id, user_id, name, created_at, last_used_at from api_tokens where user_id = $1 order by created_at desc",
@@ -2502,6 +2616,26 @@ async fn create_token(
     ctx.insert("toast_success", "Created API token. Copy it now; it won’t be shown again.");
     let html = render_template(&state, "tokens.html", ctx)?;
     Ok((jar, html).into_response())
+}
+
+async fn mint_api_token_for_user(state: &AppState, user_id: Uuid, name: &str) -> AppResult<String> {
+    let mut token_bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut token_bytes);
+    let token = to_hex(&token_bytes);
+    let token_sha256 = sha256_hex(token.as_bytes());
+
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "insert into api_tokens (id, user_id, name, token_sha256) values ($1, $2, $3, $4)",
+    )
+    .bind(id)
+    .bind(user_id)
+    .bind(name)
+    .bind(&token_sha256)
+    .execute(&state.pool)
+    .await?;
+
+    Ok(token)
 }
 
 async fn revoke_token(
@@ -2716,6 +2850,154 @@ async fn api_download_package(
 
     let Some(file_id) = file_id else {
         return Err(AppError::new_plain(StatusCode::NOT_FOUND, "Package not found"));
+    };
+
+    let file = fetch_file_by_id(&state, file_id).await?;
+    let Some(file) = file else {
+        return Err(AppError::new_plain(StatusCode::NOT_FOUND, "File not found"));
+    };
+
+    let path = state.cache_dir.join(&file.local_path);
+    let path = tokio::fs::canonicalize(path)
+        .await
+        .map_err(|_| AppError::new_plain(StatusCode::NOT_FOUND, "File missing on disk"))?;
+    if !path.starts_with(&state.cache_dir) {
+        return Err(AppError::new_plain(
+            StatusCode::BAD_REQUEST,
+            "Invalid file location",
+        ));
+    }
+
+    let file_handle = File::open(&path)
+        .await
+        .map_err(|_| AppError::new_plain(StatusCode::NOT_FOUND, "File missing on disk"))?;
+    let stream = ReaderStream::new(file_handle);
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", file.filename),
+        )
+        .body(Body::from_stream(stream))
+        .map_err(AppError::from)?;
+
+    Ok(response)
+}
+
+async fn api_latest_firmware(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let (user, _token_id) = api_user_from_bearer(&state, &headers).await?;
+    let slug = sanitize_slug(&slug);
+    let channel = query
+        .get("channel")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(sanitize_slug)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "stable".to_string());
+
+    let record = sqlx::query_as::<_, (String, String)>(
+        r#"
+        select f.version, f.sha256
+        from apps a
+        join app_assignments aa on aa.app_id = a.id
+        join firmware_releases f on f.app_id = a.id
+        where a.slug = $1 and aa.user_id = $2 and f.channel = $3
+        order by f.created_at desc
+        limit 1
+        "#,
+    )
+    .bind(&slug)
+    .bind(user.id)
+    .bind(&channel)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    let Some((version, sha256)) = record else {
+        return Err(AppError::new_plain(
+            StatusCode::NOT_FOUND,
+            "Firmware not found",
+        ));
+    };
+
+    let payload = serde_json::json!({
+        "app_slug": slug,
+        "channel": channel,
+        "version": version,
+        "sha256": sha256,
+        "download_url": format!("/api/apps/{}/firmware/download?channel={}", slug, channel),
+    });
+    Ok(axum::Json(payload).into_response())
+}
+
+async fn api_download_firmware(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let (user, _token_id) = api_user_from_bearer(&state, &headers).await?;
+    let slug = sanitize_slug(&slug);
+    let channel = query
+        .get("channel")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(sanitize_slug)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "stable".to_string());
+
+    let version_filter = query
+        .get("version")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let file_id = match version_filter {
+        Some(version) => {
+            sqlx::query_scalar::<_, Uuid>(
+                r#"
+                select f.file_id
+                from apps a
+                join app_assignments aa on aa.app_id = a.id
+                join firmware_releases f on f.app_id = a.id
+                where a.slug = $1 and aa.user_id = $2 and f.channel = $3 and f.version = $4
+                order by f.created_at desc
+                limit 1
+                "#,
+            )
+            .bind(&slug)
+            .bind(user.id)
+            .bind(&channel)
+            .bind(&version)
+            .fetch_optional(&state.pool)
+            .await?
+        }
+        None => {
+            sqlx::query_scalar::<_, Uuid>(
+                r#"
+                select f.file_id
+                from apps a
+                join app_assignments aa on aa.app_id = a.id
+                join firmware_releases f on f.app_id = a.id
+                where a.slug = $1 and aa.user_id = $2 and f.channel = $3
+                order by f.created_at desc
+                limit 1
+                "#,
+            )
+            .bind(&slug)
+            .bind(user.id)
+            .bind(&channel)
+            .fetch_optional(&state.pool)
+            .await?
+        }
+    };
+
+    let Some(file_id) = file_id else {
+        return Err(AppError::new_plain(StatusCode::NOT_FOUND, "Firmware not found"));
     };
 
     let file = fetch_file_by_id(&state, file_id).await?;

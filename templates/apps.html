@@ -66,7 +66,7 @@
                             <span class="muted">No package uploaded yet.</span>
                         {% elif app.targets | length == 1 %}
                             {% set t = app.targets[0] %}
-                            <a class="pill-action icon-link" href="/apps/{{ app.slug }}/download?target={{ t.os }}:{{ t.arch }}" aria-label="Download">
+                            <a class="pill-action icon-link" href="/apps/{{ app.slug }}/download/bootstrap?target={{ t.os }}:{{ t.arch }}" aria-label="Download">
                                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                                     <polyline points="7 10 12 15 17 10" />
@@ -74,7 +74,7 @@
                                 </svg>
                             </a>
                         {% else %}
-                            <form method="get" action="/apps/{{ app.slug }}/download" class="app-download-form">
+                            <form method="get" action="/apps/{{ app.slug }}/download/bootstrap" class="app-download-form">
                                 <select name="target" aria-label="Select OS">
                                     {% for t in app.targets %}
                                         <option value="{{ t.os }}:{{ t.arch }}">{{ t.os | upper }} ({{ t.arch }}) · {{ t.version }}</option>
