@@ -144,28 +144,38 @@
                         {% if app.targets is defined and app.targets | length > 0 %}
                             {% if app.targets | length == 1 %}
                                 {% set t = app.targets[0] %}
-                                <a class="pill-action icon-link" href="/apps/{{ app.slug }}/download/bootstrap?target={{ t.os }}:{{ t.arch }}" aria-label="Download package">
-                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                                        <polyline points="7 10 12 15 17 10"/>
-                                        <line x1="12" y1="15" x2="12" y2="3"/>
-                                    </svg>
-                                    Download ({{ t.os | upper }} {{ t.arch }})
-                                </a>
+                                <div class="action-group">
+                                    <a class="pill-action icon-link" href="/apps/{{ app.slug }}/installer/download?target={{ t.os }}:{{ t.arch }}" aria-label="Download installer">
+                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                            <polyline points="7 10 12 15 17 10"/>
+                                            <line x1="12" y1="15" x2="12" y2="3"/>
+                                        </svg>
+                                        Installer
+                                    </a>
+                                    <button type="button" class="pill-action icon-link" data-copy-download="{{ app.slug }}" data-copy-target="{{ t.os }}:{{ t.arch }}" aria-label="Copy download URL">
+                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                            <rect x="9" y="9" width="13" height="13" rx="2"/>
+                                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                                        </svg>
+                                        Copy URL
+                                    </button>
+                                </div>
                             {% else %}
-                                <form method="get" action="/apps/{{ app.slug }}/download/bootstrap" class="app-download-form">
-                                    <select name="target" aria-label="Select download target">
+                                <form method="get" action="/apps/{{ app.slug }}/installer/download" class="app-download-form">
+                                    <select id="download-target-{{ app.slug }}" name="target" aria-label="Select download target">
                                         {% for t in app.targets %}
                                             <option value="{{ t.os }}:{{ t.arch }}">{{ t.os | upper }} ({{ t.arch }}) · {{ t.version }}</option>
                                         {% endfor %}
                                     </select>
-                                    <button type="submit" class="icon-btn btn-compact" aria-label="Download">
+                                    <button type="submit" class="icon-btn btn-compact" aria-label="Download installer">
                                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                                             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
                                             <polyline points="7 10 12 15 17 10"/>
                                             <line x1="12" y1="15" x2="12" y2="3"/>
                                         </svg>
                                     </button>
+                                    <button type="button" class="icon-btn btn-compact secondary" data-copy-download="{{ app.slug }}" data-copy-select="download-target-{{ app.slug }}" aria-label="Copy download URL">Copy URL</button>
                                 </form>
                             {% endif %}
                         {% else %}
@@ -244,28 +254,30 @@
                         </form>
                     </div>
 
-                    {% if edit_app is defined and edit_app and edit_app.slug == app.slug %}
-                    <div class="stack" style="margin-top: 14px; border-top: 1px dashed rgba(31,41,55,0.85); padding-top: 14px;">
-                        <div class="inline-actions" style="align-items: flex-start;">
-                            <div style="min-width: 0;">
-                                <h3 style="margin: 0;">Edit app</h3>
-                                <div class="muted" style="margin-top: 6px;"><code>{{ app.slug }}</code></div>
-                            </div>
-                            <div class="action-group">
-                                <a class="pill-action icon-link" href="/apps/manage?app={{ app.slug }}" aria-label="Close edit">
-                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                        <path d="M18 6L6 18"/>
-                                        <path d="M6 6l12 12"/>
-                                    </svg>
-                                </a>
-                            </div>
-                        </div>
+	                    {% if edit_app is defined and edit_app and edit_app.slug == app.slug %}
+	                    <div class="stack" style="margin-top: 14px; border-top: 1px dashed rgba(31,41,55,0.85); padding-top: 14px;">
+	                        <div class="inline-actions" style="align-items: flex-start;">
+	                            <div style="min-width: 0;">
+	                                <h3 style="margin: 0;">Edit app</h3>
+	                                <div class="muted" style="margin-top: 6px;"><code>{{ app.slug }}</code></div>
+	                            </div>
+	                            <div class="action-group">
+	                                <a class="pill-action icon-link" href="/apps/manage?app={{ app.slug }}" aria-label="Close edit">
+	                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+	                                        <path d="M18 6L6 18"/>
+	                                        <path d="M6 6l12 12"/>
+	                                    </svg>
+	                                </a>
+	                            </div>
+	                        </div>
 
-                        <div class="stack">
-                            <h4 style="margin: 0;">App details</h4>
-                            <form method="post" action="/apps/{{ app.slug }}/update" enctype="multipart/form-data">
-                                <input type="hidden" name="return_to" value="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}">
-                                <div class="stack">
+	                        <details data-remember-open="edit:{{ app.slug }}" data-default-open="0" style="margin-top: 10px;">
+	                            <summary>Configuration & uploads</summary>
+	                            <div class="stack" style="margin-top: 12px;">
+	                            <h4 style="margin: 0;">App details</h4>
+	                            <form method="post" action="/apps/{{ app.slug }}/update" enctype="multipart/form-data">
+	                                <input type="hidden" name="return_to" value="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}">
+	                                <div class="stack">
                                     <label for="edit-name-{{ app.slug }}">Display name</label>
                                     <input id="edit-name-{{ app.slug }}" name="name" type="text" required value="{{ app.name | escape }}">
                                 </div>
@@ -279,16 +291,15 @@
                                     <input id="edit-icon-{{ app.slug }}" name="icon" type="file" accept=".png,.svg">
                                 </div>
                                 <div class="inline-actions">
-                                    <button type="submit" class="icon-btn btn-compact secondary">Save details</button>
-                                </div>
-                            </form>
-                        </div>
+	                                    <button type="submit" class="icon-btn btn-compact secondary">Save details</button>
+	                                </div>
+	                            </form>
 
-                        <details style="margin-top: 10px;">
-                            <summary>Packages</summary>
-                            <div class="stack" style="margin-top: 12px;">
-                                <p class="muted" style="margin: 0;">Uploading a new archive with a new version creates a new version. Uploading with an existing version replaces that version.</p>
-                                <details style="margin-top: 10px;">
+	                        <details style="margin-top: 10px;">
+	                            <summary>Packages</summary>
+	                            <div class="stack" style="margin-top: 12px;">
+	                                <p class="muted" style="margin: 0;">Uploading a new archive with a new version creates a new version. Uploading with an existing version replaces that version.</p>
+	                                <details style="margin-top: 10px;">
                                     <summary>Build package (recommended)</summary>
                                     <form method="post" action="/apps/{{ app.slug }}/package/build" enctype="multipart/form-data" style="margin-top: 12px;">
                                         <input type="hidden" name="return_to" value="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}">
@@ -369,14 +380,14 @@
                                         </div>
                                     </form>
                                 </details>
-                            </div>
-                        </details>
+	                            </div>
+	                        </details>
 
-                        <details style="margin-top: 10px;">
-                            <summary>Firmware</summary>
-                            <form method="post" action="/apps/{{ app.slug }}/firmware/upload" enctype="multipart/form-data" style="margin-top: 12px;">
-                                <input type="hidden" name="return_to" value="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}">
-                                <div class="stack">
+	                        <details style="margin-top: 10px;">
+	                            <summary>Firmware</summary>
+	                            <form method="post" action="/apps/{{ app.slug }}/firmware/upload" enctype="multipart/form-data" style="margin-top: 12px;">
+	                                <input type="hidden" name="return_to" value="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}">
+	                                <div class="stack">
                                     <label for="fw-channel-{{ app.slug }}">Channel</label>
                                     <input id="fw-channel-{{ app.slug }}" name="channel" type="text" value="stable" placeholder="stable">
                                 </div>
@@ -390,25 +401,27 @@
                                 </div>
                                 <div class="inline-actions">
                                     <button type="submit" class="icon-btn btn-compact">Upload firmware</button>
-                                </div>
-                            </form>
-                        </details>
+	                                </div>
+	                            </form>
+	                        </details>
 
-                        <details style="margin-top: 10px;">
-                            <summary>Delete app</summary>
-                            <form method="post" action="/apps/{{ app.slug }}/delete" data-confirm="Delete this app? This cannot be undone." style="margin-top: 12px;">
-                                <div class="stack">
-                                    <label for="confirm-delete-{{ app.slug }}">Type <code>{{ app.slug }}</code> to confirm</label>
+	                        <details style="margin-top: 10px;">
+	                            <summary>Delete app</summary>
+	                            <form method="post" action="/apps/{{ app.slug }}/delete" data-confirm="Delete this app? This cannot be undone." style="margin-top: 12px;">
+	                                <div class="stack">
+	                                    <label for="confirm-delete-{{ app.slug }}">Type <code>{{ app.slug }}</code> to confirm</label>
                                     <input id="confirm-delete-{{ app.slug }}" name="confirm_slug" type="text" required placeholder="{{ app.slug }}">
                                 </div>
                                 <div class="inline-actions">
                                     <button type="submit" class="icon-btn btn-compact" style="background: linear-gradient(120deg, #ef4444, #f97316); color: #0b1222;">Delete app</button>
-                                </div>
-                            </form>
-                        </details>
-                    </div>
-                    {% endif %}
-                </div>
+	                                </div>
+	                            </form>
+	                        </details>
+	                            </div>
+	                        </details>
+	                    </div>
+	                    {% endif %}
+	                </div>
             </details>
         {% endfor %}
     </div>
@@ -499,6 +512,84 @@
     if (!panel.hidden) {
       const select = panel.querySelector("select, input, button");
       if (select) select.focus();
+    }
+  });
+})();
+
+(() => {
+  const prefix = "pdes-cdn:";
+  const panels = Array.from(document.querySelectorAll("details[data-remember-open]"));
+  for (const panel of panels) {
+    const keySuffix = panel.getAttribute("data-remember-open");
+    if (!keySuffix) continue;
+    const key = `${prefix}${keySuffix}`;
+    const stored = window.localStorage.getItem(key);
+    if (stored === "1") panel.open = true;
+    else if (stored === "0") panel.open = false;
+    else {
+      const def = panel.getAttribute("data-default-open");
+      if (def === "1") panel.open = true;
+    }
+    panel.addEventListener("toggle", () => {
+      try {
+        window.localStorage.setItem(key, panel.open ? "1" : "0");
+      } catch (_) {}
+    });
+  }
+})();
+
+(() => {
+  const fallbackCopy = (text) => {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "true");
+    area.style.position = "fixed";
+    area.style.top = "-9999px";
+    document.body.appendChild(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return ok;
+  };
+
+  const copyText = async (text) => {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+    return fallbackCopy(text);
+  };
+
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-copy-download]");
+    if (!button) return;
+    event.preventDefault();
+
+    const slug = button.getAttribute("data-copy-download");
+    if (!slug) return;
+
+    let target = button.getAttribute("data-copy-target");
+    if (!target) {
+      const selectId = button.getAttribute("data-copy-select");
+      const select = selectId ? document.getElementById(selectId) : null;
+      target = select && select.value ? select.value : null;
+    }
+    if (!target) return;
+
+    const url = `${window.location.origin}/apps/${slug}/installer/download?target=${encodeURIComponent(target)}`;
+
+    const originalHtml = button.dataset.originalHtml || button.innerHTML;
+    button.dataset.originalHtml = originalHtml;
+
+    try {
+      const ok = await copyText(url);
+      if (!ok) throw new Error("copy failed");
+      button.textContent = "Copied";
+      window.setTimeout(() => {
+        button.innerHTML = originalHtml;
+      }, 1200);
+    } catch (_) {
+      window.prompt("Copy download URL:", url);
     }
   });
 })();

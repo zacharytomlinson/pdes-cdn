@@ -61,35 +61,38 @@
                     {% else %}
                         <p class="muted app-desc-full">No description provided.</p>
                     {% endif %}
-                    <div class="app-actions">
-                        {% if app.targets | length == 0 %}
-                            <span class="muted">No package uploaded yet.</span>
-                        {% elif app.targets | length == 1 %}
-                            {% set t = app.targets[0] %}
-                            <a class="pill-action icon-link" href="/apps/{{ app.slug }}/download/bootstrap?target={{ t.os }}:{{ t.arch }}" aria-label="Download">
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                    <polyline points="7 10 12 15 17 10" />
-                                    <line x1="12" y1="15" x2="12" y2="3" />
-                                </svg>
-                            </a>
-                        {% else %}
-                            <form method="get" action="/apps/{{ app.slug }}/download/bootstrap" class="app-download-form">
-                                <select name="target" aria-label="Select OS">
-                                    {% for t in app.targets %}
-                                        <option value="{{ t.os }}:{{ t.arch }}">{{ t.os | upper }} ({{ t.arch }}) · {{ t.version }}</option>
-                                    {% endfor %}
-                                </select>
-                                <button type="submit" class="icon-btn btn-compact" aria-label="Download">
-                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                        <polyline points="7 10 12 15 17 10" />
-                                        <line x1="12" y1="15" x2="12" y2="3" />
-                                    </svg>
-                                </button>
-                            </form>
-                        {% endif %}
-                    </div>
+	                    <div class="app-actions">
+	                        {% if app.targets | length == 0 %}
+	                            <span class="muted">No package uploaded yet.</span>
+	                        {% elif app.targets | length == 1 %}
+	                            {% set t = app.targets[0] %}
+	                            <div class="action-group">
+	                                <a class="pill-action icon-link" href="/apps/{{ app.slug }}/installer/download?target={{ t.os }}:{{ t.arch }}" aria-label="Download installer">
+	                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+	                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+	                                        <polyline points="7 10 12 15 17 10" />
+	                                        <line x1="12" y1="15" x2="12" y2="3" />
+	                                    </svg>
+	                                    Installer
+	                                </a>
+	                            </div>
+	                        {% else %}
+	                            <form method="get" action="/apps/{{ app.slug }}/installer/download" class="app-download-form">
+	                                <select name="target" aria-label="Select OS">
+	                                    {% for t in app.targets %}
+	                                        <option value="{{ t.os }}:{{ t.arch }}">{{ t.os | upper }} ({{ t.arch }}) · {{ t.version }}</option>
+	                                    {% endfor %}
+	                                </select>
+	                                <button type="submit" class="icon-btn btn-compact" aria-label="Download installer">
+	                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+	                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+	                                        <polyline points="7 10 12 15 17 10" />
+	                                        <line x1="12" y1="15" x2="12" y2="3" />
+	                                    </svg>
+	                                </button>
+	                            </form>
+	                        {% endif %}
+	                    </div>
                 </div>
             </details>
         {% endfor %}
