@@ -43,6 +43,15 @@
     </div>
 {% endif %}
 
+{% if new_app_upload_token %}
+    <div class="alert success">
+        <div><strong>{{ new_app_upload_token_name | default(value="App upload token") }}</strong></div>
+        <div class="muted" style="margin-top: 6px;">App: <code>{{ new_app_upload_token_app_slug }}</code></div>
+        <div style="margin-top: 8px;">Copy this token now (shown once):</div>
+        <div style="margin-top: 8px;"><code style="user-select: all;">{{ new_app_upload_token }}</code></div>
+    </div>
+{% endif %}
+
 <div class="grid-2">
     <section class="card">
         <h2 style="margin-top: 0;">Create token</h2>
@@ -64,10 +73,52 @@
         </form>
     </section>
 
+    {% if can_write %}
+        <section class="card">
+            <h2 style="margin-top: 0;">Create app upload token</h2>
+            <p class="muted">Least-privilege token for CI to upload packages for one app (usable only with <code>POST /api/apps/&lt;slug&gt;/package/upload</code>).</p>
+            <form method="post" action="/tokens/app-upload">
+                <div class="stack">
+                    <label for="app_slug">App</label>
+                    <select id="app_slug" name="app_slug" required>
+                        {% set app_list = apps | default(value=[]) %}
+                        {% if app_list | length == 0 %}
+                            <option value="" selected disabled>No apps yet</option>
+                        {% else %}
+                            <option value="" selected disabled>Select an app…</option>
+                        {% endif %}
+                        {% for a in app_list %}
+                            <option value="{{ a.slug }}">{{ a.name }} ({{ a.slug }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="stack">
+                    <label for="app_upload_name">Token name</label>
+                    <input id="app_upload_name" name="name" type="text" placeholder="GitHub Actions (release)">
+                </div>
+                <div class="stack">
+                    <label for="expires_days">Expires in days (optional)</label>
+                    <input id="expires_days" name="expires_days" type="number" min="1" max="3650" placeholder="365">
+                </div>
+                <div class="inline-actions">
+                    <button type="submit" class="icon-btn btn-compact">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="9" />
+                            <line x1="12" y1="8" x2="12" y2="16" />
+                            <line x1="8" y1="12" x2="16" y2="12" />
+                        </svg>
+                        Create
+                    </button>
+                </div>
+            </form>
+        </section>
+    {% endif %}
+
     <section class="card">
         <h2 style="margin-top: 0;">Update API</h2>
         <div class="muted">
             <div><code>GET /api/apps/&lt;slug&gt;/package/latest?os=windows&amp;arch=x86_64</code></div>
+            <div style="margin-top: 8px;"><code>POST /api/apps/&lt;slug&gt;/package/upload</code> (writer API token or app upload token; multipart: <code>os</code>, <code>arch</code>, <code>version</code>, <code>file</code>)</div>
             <div style="margin-top: 8px;"><code>GET /api/apps/&lt;slug&gt;/package/download?os=windows&amp;arch=x86_64</code></div>
             <div style="margin-top: 14px;"><code>GET /api/apps/&lt;slug&gt;/firmware/latest?channel=stable</code></div>
             <div style="margin-top: 8px;"><code>GET /api/apps/&lt;slug&gt;/firmware/download?channel=stable</code></div>
@@ -123,4 +174,73 @@
         </div>
     {% endif %}
 </section>
+
+{% if can_write %}
+    <section class="card" style="margin-top: 18px;">
+        <h2 style="margin-top: 0;">App upload tokens</h2>
+        {% set tlist = app_upload_tokens | default(value=[]) %}
+        {% if tlist | length == 0 %}
+            <p class="muted">No app upload tokens yet.</p>
+        {% else %}
+            <div class="table-scroll">
+                <table class="table-fixed">
+                    <colgroup>
+                        <col style="width: 22%;">
+                        <col style="width: 34%;">
+                        <col style="width: 16%;">
+                        <col style="width: 16%;">
+                        <col style="width: 6%;">
+                        <col style="width: 6%;">
+                    </colgroup>
+                    <thead>
+                    <tr>
+                        <th>App</th>
+                        <th>Name</th>
+                        <th class="num">Last used</th>
+                        <th class="num">Expires</th>
+                        <th class="num">Created</th>
+                        <th class="actions"> </th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    {% for t in tlist %}
+                        <tr>
+                            <td class="truncate"><code>{{ t.app_slug }}</code></td>
+                            <td class="truncate">
+                                {{ t.name }}
+                                {% if t.revoked_at %}<span class="badge" style="margin-left: 8px;">revoked</span>{% endif %}
+                            </td>
+                            <td class="num">{% if t.last_used_at %}{{ t.last_used_at }}{% else %}—{% endif %}</td>
+                            <td class="num">{% if t.expires_at %}{{ t.expires_at }}{% else %}—{% endif %}</td>
+                            <td class="num">{{ t.created_at }}</td>
+                            <td class="actions">
+                                {% if t.revoked_at %}
+                                    <button class="secondary icon-btn" type="button" disabled aria-label="Revoked">
+                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M18 6L6 18"/>
+                                            <path d="M6 6l12 12"/>
+                                        </svg>
+                                    </button>
+                                {% else %}
+                                    <form method="post" action="/tokens/app-upload/{{ t.id }}/revoke" onsubmit="return confirm('Revoke this app upload token?');">
+                                        <button class="secondary icon-btn" type="submit" aria-label="Revoke token">
+                                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                                <polyline points="3 6 5 6 21 6" />
+                                                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                                                <path d="M10 11v6" />
+                                                <path d="M14 11v6" />
+                                                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                                            </svg>
+                                        </button>
+                                    </form>
+                                {% endif %}
+                            </td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        {% endif %}
+    </section>
+{% endif %}
 {% endblock content %}

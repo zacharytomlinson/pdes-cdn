@@ -108,14 +108,9 @@ The installer seeds an initial writer user so you can log in and finish setup. T
 
 ## API uploads (CI/pipelines)
 
-Use the project bucket token as a bearer token:
+For CI uploading app packages into the app store, create an **app upload token** at `GET /tokens` (writer UI) and use it with `POST /api/apps/<slug>/package/upload` (see below).
 
-```bash
-curl -fS \
-  -H "Authorization: Bearer $UPLOAD_TOKEN" \
-  -F "file=@./artifact.bin" \
-  https://cdn.example.com/api/upload
-```
+The older generic file upload endpoint `POST /api/upload` still exists, but it expects a *project upload token* (stored in `project_tokens`) and may not be exposed in the current UI.
 
 ## Desktop app update API (packages + firmware)
 
@@ -126,6 +121,8 @@ This node can serve desktop app installers and firmware artifacts, with a bearer
 
 ### Package (installer) updates
 
+- Building a `.pkg` in CI: use `scripts/build_pkg.sh` to bundle your installer + icon into the `.pkg` format this server expects.
+- Upload/register a built `.pkg` (app upload token or writer API token): `POST /api/apps/<slug>/package/upload` with multipart fields `os`, `arch`, `version`, `file=@...pkg` and `Authorization: Bearer <token>`.
 - Latest metadata: `GET /api/apps/<slug>/package/latest?os=windows&arch=x86_64`
   - Response JSON example:
     ```json

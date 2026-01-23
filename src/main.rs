@@ -321,6 +321,13 @@ struct InviteUserForm {
     email: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateAppUploadTokenForm {
+    app_slug: String,
+    name: String,
+    expires_days: Option<i64>,
+}
+
 #[derive(Debug, Clone, FromRow, serde::Serialize)]
 struct UserBrief {
     id: Uuid,
@@ -341,6 +348,23 @@ struct ApiTokenRow {
     name: String,
     created_at: DateTime<Utc>,
     last_used_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, FromRow, serde::Serialize)]
+struct AppOptionRow {
+    slug: String,
+    name: String,
+}
+
+#[derive(Debug, Clone, FromRow, serde::Serialize)]
+struct AppUploadTokenRow {
+    id: Uuid,
+    app_slug: String,
+    name: String,
+    created_at: DateTime<Utc>,
+    last_used_at: Option<DateTime<Utc>>,
+    revoked_at: Option<DateTime<Utc>>,
+    expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -580,6 +604,11 @@ async fn main() -> AppResult<()> {
         .route("/apps/:slug/firmware/upload", post(upload_firmware))
         .route("/tokens", get(list_tokens).post(create_token))
         .route("/tokens/:id/revoke", post(revoke_token))
+        .route("/tokens/app-upload", post(create_app_upload_token))
+        .route(
+            "/tokens/app-upload/:id/revoke",
+            post(revoke_app_upload_token),
+        )
         .route("/files", get(list_files))
         .route("/files/:id/delete", post(delete_file))
         .route("/cache-summary", get(cache_summary))
@@ -589,6 +618,10 @@ async fn main() -> AppResult<()> {
         .route("/upload", axum::routing::post(upload_file))
         .route("/api/upload", axum::routing::post(api_upload))
         .route("/api/apps/:slug/package/latest", get(api_latest_package))
+        .route(
+            "/api/apps/:slug/package/upload",
+            post(api_upload_app_package),
+        )
         .route(
             "/api/apps/:slug/package/download",
             get(api_download_package),
@@ -3285,17 +3318,10 @@ async fn list_tokens(State(state): State<AppState>, jar: SignedCookieJar) -> App
         return Ok((jar, Redirect::to("/login")).into_response());
     };
 
-    let tokens = sqlx::query_as::<_, ApiTokenRow>(
-        "select id, user_id, name, created_at, last_used_at from api_tokens where user_id = $1 order by created_at desc",
-    )
-    .bind(user.id)
-    .fetch_all(&state.pool)
-    .await?;
-
     let mut ctx = TeraContext::new();
     ctx.insert("user_email", &user.email);
-    ctx.insert("tokens", &tokens);
     ctx.insert("can_write", &is_writer(&user));
+    populate_tokens_context(&state, &user, &mut ctx).await?;
     let html = render_template(&state, "tokens.html", ctx)?;
     Ok((jar, html).into_response())
 }
@@ -3319,19 +3345,12 @@ async fn create_token(
 
     let token = mint_api_token_for_user(&state, user.id, &name).await?;
 
-    let tokens = sqlx::query_as::<_, ApiTokenRow>(
-        "select id, user_id, name, created_at, last_used_at from api_tokens where user_id = $1 order by created_at desc",
-    )
-    .bind(user.id)
-    .fetch_all(&state.pool)
-    .await?;
-
     let mut ctx = TeraContext::new();
     ctx.insert("user_email", &user.email);
-    ctx.insert("tokens", &tokens);
     ctx.insert("new_token_name", &name);
     ctx.insert("new_token", &token);
     ctx.insert("can_write", &is_writer(&user));
+    populate_tokens_context(&state, &user, &mut ctx).await?;
     ctx.insert(
         "toast_success",
         "Created API token. Copy it now; it won’t be shown again.",
@@ -3375,6 +3394,144 @@ async fn revoke_token(
         .await?;
 
     Ok((jar, Redirect::to("/tokens")).into_response())
+}
+
+async fn create_app_upload_token(
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Form(form): Form<CreateAppUploadTokenForm>,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+
+    let app_slug = sanitize_slug(form.app_slug.trim());
+    if app_slug.is_empty() {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "App is required"));
+    }
+    let app_id: Uuid = sqlx::query_scalar("select id from apps where slug = $1")
+        .bind(&app_slug)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "App not found"))?;
+
+    let name = form.name.trim();
+    let name = if name.is_empty() {
+        format!("CI upload ({})", app_slug)
+    } else {
+        name.to_string()
+    };
+
+    let expires_at = form
+        .expires_days
+        .map(|d| d.clamp(1, 3650))
+        .map(|d| Utc::now() + ChronoDuration::days(d));
+
+    let mut token_bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut token_bytes);
+    let token = to_hex(&token_bytes);
+    let token_sha256 = sha256_hex(token.as_bytes());
+
+    let id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        insert into app_upload_tokens (id, app_id, name, token_sha256, expires_at)
+        values ($1, $2, $3, $4, $5)
+        "#,
+    )
+    .bind(id)
+    .bind(app_id)
+    .bind(&name)
+    .bind(&token_sha256)
+    .bind(expires_at)
+    .execute(&state.pool)
+    .await?;
+
+    let mut ctx = TeraContext::new();
+    ctx.insert("user_email", &user.email);
+    ctx.insert("can_write", &true);
+    populate_tokens_context(&state, &user, &mut ctx).await?;
+    ctx.insert("new_app_upload_token_app_slug", &app_slug);
+    ctx.insert("new_app_upload_token_name", &name);
+    ctx.insert("new_app_upload_token", &token);
+    ctx.insert(
+        "toast_success",
+        "Created app upload token. Copy it now; it won’t be shown again.",
+    );
+    let html = render_template(&state, "tokens.html", ctx)?;
+    Ok((jar, html).into_response())
+}
+
+async fn revoke_app_upload_token(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+
+    let _ = sqlx::query("update app_upload_tokens set revoked_at = now() where id = $1")
+        .bind(id)
+        .execute(&state.pool)
+        .await;
+
+    Ok((jar, Redirect::to("/tokens")).into_response())
+}
+
+async fn populate_tokens_context(
+    state: &AppState,
+    user: &User,
+    ctx: &mut TeraContext,
+) -> AppResult<()> {
+    let tokens = sqlx::query_as::<_, ApiTokenRow>(
+        "select id, user_id, name, created_at, last_used_at from api_tokens where user_id = $1 order by created_at desc",
+    )
+    .bind(user.id)
+    .fetch_all(&state.pool)
+    .await?;
+    ctx.insert("tokens", &tokens);
+
+    if is_writer(user) {
+        let apps = sqlx::query_as::<_, AppOptionRow>("select slug, name from apps order by name")
+            .fetch_all(&state.pool)
+            .await?;
+        ctx.insert("apps", &apps);
+
+        let app_upload_tokens = sqlx::query_as::<_, AppUploadTokenRow>(
+            r#"
+            select t.id,
+                   a.slug as app_slug,
+                   t.name,
+                   t.created_at,
+                   t.last_used_at,
+                   t.revoked_at,
+                   t.expires_at
+            from app_upload_tokens t
+            join apps a on a.id = t.app_id
+            order by t.created_at desc
+            "#,
+        )
+        .fetch_all(&state.pool)
+        .await?;
+        ctx.insert("app_upload_tokens", &app_upload_tokens);
+    }
+
+    Ok(())
 }
 
 async fn stream_cached_file(
@@ -3841,6 +3998,223 @@ async fn api_download_package(
         .map_err(AppError::from)?;
 
     Ok(response)
+}
+
+async fn api_upload_app_package(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> AppResult<Response> {
+    let token = extract_bearer(&headers)
+        .ok_or_else(|| AppError::new_plain(StatusCode::UNAUTHORIZED, "Bearer token required"))?;
+    if token.len() < 24 {
+        return Err(AppError::new_plain(
+            StatusCode::UNAUTHORIZED,
+            "Invalid bearer token",
+        ));
+    }
+    let token_sha256 = sha256_hex(token.as_bytes());
+
+    let mut is_writer_user_token = false;
+    let mut app_upload_token_id: Option<Uuid> = None;
+    let mut app_upload_token_app_id: Option<Uuid> = None;
+
+    let user_record = sqlx::query_as::<_, ApiUserAuthRow>(
+        r#"
+        select t.id as token_id,
+               u.id,
+               u.email,
+               u.password_hash,
+               u.permission,
+               u.reset_token,
+               u.reset_token_expires,
+               u.must_reset
+        from api_tokens t
+        join users u on u.id = t.user_id
+        where t.token_sha256 = $1
+        "#,
+    )
+    .bind(&token_sha256)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    if let Some(row) = user_record {
+        let user = User {
+            id: row.id,
+            email: row.email,
+            password_hash: row.password_hash,
+            permission: row.permission,
+            reset_token: row.reset_token,
+            reset_token_expires: row.reset_token_expires,
+            must_reset: row.must_reset,
+        };
+        if !is_writer(&user) {
+            return Err(AppError::new_plain(
+                StatusCode::FORBIDDEN,
+                "Writer permission required",
+            ));
+        }
+        is_writer_user_token = true;
+        let _ = sqlx::query("update api_tokens set last_used_at = now() where id = $1")
+            .bind(row.token_id)
+            .execute(&state.pool)
+            .await;
+    } else {
+        let record: Option<(Uuid, Uuid)> = sqlx::query_as(
+            r#"
+            select id, app_id
+            from app_upload_tokens
+            where token_sha256 = $1
+              and revoked_at is null
+              and (expires_at is null or expires_at > now())
+            "#,
+        )
+        .bind(&token_sha256)
+        .fetch_optional(&state.pool)
+        .await?;
+
+        let Some((token_id, app_id)) = record else {
+            return Err(AppError::new_plain(
+                StatusCode::UNAUTHORIZED,
+                "Invalid bearer token",
+            ));
+        };
+        app_upload_token_id = Some(token_id);
+        app_upload_token_app_id = Some(app_id);
+        let _ = sqlx::query("update app_upload_tokens set last_used_at = now() where id = $1")
+            .bind(token_id)
+            .execute(&state.pool)
+            .await;
+    }
+
+    let slug = sanitize_slug(&slug);
+    let app_id: Uuid = sqlx::query_scalar("select id from apps where slug = $1")
+        .bind(&slug)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::new_plain(StatusCode::NOT_FOUND, "App not found"))?;
+
+    if !is_writer_user_token {
+        let Some(scoped_app_id) = app_upload_token_app_id else {
+            return Err(AppError::new_plain(
+                StatusCode::UNAUTHORIZED,
+                "Invalid bearer token",
+            ));
+        };
+        if scoped_app_id != app_id {
+            return Err(AppError::new_plain(
+                StatusCode::FORBIDDEN,
+                "Token is not valid for this app",
+            ));
+        }
+    }
+
+    let mut version: Option<String> = None;
+    let mut os: Option<String> = None;
+    let mut arch: Option<String> = None;
+    let mut uploaded: Option<(Uuid, String)> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|_| AppError::new_plain(StatusCode::BAD_REQUEST, "Invalid upload payload"))?
+    {
+        match field.name() {
+            Some("os") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new_plain(StatusCode::BAD_REQUEST, "Invalid os"))?;
+                os = Some(normalize_os(v.trim())?);
+            }
+            Some("arch") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new_plain(StatusCode::BAD_REQUEST, "Invalid arch"))?;
+                arch = Some(normalize_arch(v.trim())?);
+            }
+            Some("version") => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|_| AppError::new_plain(StatusCode::BAD_REQUEST, "Invalid version"))?;
+                let v = v.trim();
+                if v.is_empty() {
+                    return Err(AppError::new_plain(
+                        StatusCode::BAD_REQUEST,
+                        "Version is required",
+                    ));
+                }
+                version = Some(v.to_string());
+            }
+            Some("file") => {
+                let version = version.clone().ok_or_else(|| {
+                    AppError::new_plain(StatusCode::BAD_REQUEST, "Version is required")
+                })?;
+                let os = os.clone().ok_or_else(|| {
+                    AppError::new_plain(StatusCode::BAD_REQUEST, "OS is required")
+                })?;
+                let arch = arch.clone().unwrap_or_else(|| "x86_64".to_string());
+                let prefix = format!(
+                    "apps/{}/packages/{}/{}/{}",
+                    sanitize_bucket(&slug),
+                    sanitize_bucket(&os),
+                    sanitize_bucket(&arch),
+                    sanitize_bucket(&version)
+                );
+                let result = save_upload_to_prefix(&state, field, &prefix, &["pkg"]).await?;
+                uploaded = Some((result.id, result.sha256));
+            }
+            _ => {}
+        }
+    }
+
+    let Some((pkg_file_id, pkg_sha256)) = uploaded else {
+        return Err(AppError::new_plain(
+            StatusCode::BAD_REQUEST,
+            "No file provided",
+        ));
+    };
+    let version = version
+        .ok_or_else(|| AppError::new_plain(StatusCode::BAD_REQUEST, "Version is required"))?;
+    let os = os.ok_or_else(|| AppError::new_plain(StatusCode::BAD_REQUEST, "OS is required"))?;
+    let arch = arch.unwrap_or_else(|| "x86_64".to_string());
+
+    let package_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        insert into app_packages (id, app_id, version, os, arch, pkg_file_id, pkg_sha256)
+        values ($1, $2, $3, $4, $5, $6, $7)
+        on conflict (app_id, version, os, arch)
+        do update set pkg_file_id = excluded.pkg_file_id, pkg_sha256 = excluded.pkg_sha256, created_at = now()
+        "#,
+    )
+    .bind(package_id)
+    .bind(app_id)
+    .bind(&version)
+    .bind(&os)
+    .bind(&arch)
+    .bind(pkg_file_id)
+    .bind(&pkg_sha256)
+    .execute(&state.pool)
+    .await?;
+
+    state.file_list_cache.invalidate_all();
+    state.file_by_id_cache.invalidate_all();
+
+    let payload = serde_json::json!({
+        "app_slug": slug,
+        "os": os,
+        "arch": arch,
+        "version": version,
+        "pkg_file_id": pkg_file_id,
+        "pkg_sha256": pkg_sha256,
+        "auth": if is_writer_user_token { "writer_api_token" } else { "app_upload_token" },
+        "app_upload_token_id": app_upload_token_id,
+    });
+    Ok(axum::Json(payload).into_response())
 }
 
 async fn api_latest_firmware(
