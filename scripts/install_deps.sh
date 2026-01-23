@@ -89,7 +89,7 @@ fi
 chmod +x "$APP_DIR/pdes-cdn"
 chown "$APP_USER":"$APP_USER" "$APP_DIR/pdes-cdn"
 
-echo "[3b/8] Fetching templates..."
+echo "[3b/8] Fetching templates + migrations..."
 SRC_TMP="$(mktemp -d)"
 ARCHIVE_URL="https://api.github.com/repos/${REPO}/tarball/${RELEASE_TAG}"
 if [[ -n "$GH_DOWNLOAD_TOKEN" ]]; then
@@ -110,6 +110,14 @@ else
   echo "Templates directory not found in archive; aborting." >&2
   exit 1
 fi
+if [[ -d "$SRC_ROOT/migrations" ]]; then
+  rm -rf "$APP_DIR/migrations"
+  cp -r "$SRC_ROOT/migrations" "$APP_DIR/"
+  chown -R "$APP_USER":"$APP_USER" "$APP_DIR/migrations"
+else
+  echo "Migrations directory not found in archive; aborting." >&2
+  exit 1
+fi
 rm -rf "$SRC_TMP"
 
 echo "[4/8] PostgreSQL setup (db/user)..."
@@ -121,97 +129,21 @@ sudo -u postgres psql -d "$DB_NAME" -c "GRANT ALL ON SCHEMA public TO ${DB_USER}
 
 echo "[5/8] Running migrations..."
 export DATABASE_URL="postgres://${DB_USER}:${DB_PASS}@localhost:5432/${DB_NAME}"
-psql "$DATABASE_URL" >/dev/null <<'SQL'
--- 0001_init.sql
-create table if not exists users (
-    id uuid primary key,
-    email text not null unique,
-    password_hash text not null,
-    reset_token text,
-    reset_token_expires timestamptz,
-    created_at timestamptz not null default now(),
-    permission text not null default 'reader',
-    must_reset boolean not null default false
-);
-
-create table if not exists cached_files (
-    id uuid primary key,
-    filename text not null,
-    local_path text not null,
-    size_bytes bigint,
-    created_at timestamptz not null default now()
-);
-
-create index if not exists idx_cached_files_created_at on cached_files(created_at desc);
-
--- project_tokens table
-create table if not exists project_tokens (
-    id uuid primary key,
-    project text not null,
-    bucket text not null,
-    token text not null unique,
-    created_at timestamptz not null default now(),
-    unique (project, bucket)
-);
-
--- app store tables
-create table if not exists apps (
-    id uuid primary key,
-    slug text not null unique,
-    name text not null,
-    description text,
-    icon_file_id uuid references cached_files(id),
-    created_at timestamptz not null default now()
-);
-
-create table if not exists app_packages (
-    id uuid primary key,
-    app_id uuid not null references apps(id) on delete cascade,
-    version text not null,
-    os text not null default 'unknown',
-    arch text not null default 'x86_64',
-    pkg_file_id uuid not null references cached_files(id) on delete restrict,
-    pkg_sha256 text not null,
-    created_at timestamptz not null default now(),
-    unique (app_id, version, os, arch)
-);
-
-create table if not exists firmware_releases (
-    id uuid primary key,
-    app_id uuid not null references apps(id) on delete cascade,
-    channel text not null default 'stable',
-    version text not null,
-    file_id uuid not null references cached_files(id) on delete restrict,
-    sha256 text not null,
-    created_at timestamptz not null default now(),
-    unique (app_id, channel, version)
-);
-
-create table if not exists app_assignments (
-    app_id uuid not null references apps(id) on delete cascade,
-    user_id uuid not null references users(id) on delete cascade,
-    created_at timestamptz not null default now(),
-    primary key (app_id, user_id)
-);
-
-create index if not exists idx_app_assignments_user on app_assignments(user_id);
-create index if not exists idx_app_packages_app_created_at on app_packages(app_id, created_at desc);
-create index if not exists idx_firmware_releases_app_created_at on firmware_releases(app_id, created_at desc);
-create index if not exists idx_app_packages_sha256 on app_packages(app_id, pkg_sha256);
-create index if not exists idx_firmware_releases_sha256 on firmware_releases(app_id, sha256);
-
--- api_tokens for desktop apps
-create table if not exists api_tokens (
-    id uuid primary key,
-    user_id uuid not null references users(id) on delete cascade,
-    name text not null default '',
-    token_sha256 text not null unique,
-    created_at timestamptz not null default now(),
-    last_used_at timestamptz
-);
-
-create index if not exists idx_api_tokens_user_id on api_tokens(user_id);
-SQL
+if [[ ! -d "$APP_DIR/migrations" ]]; then
+  echo "Migrations directory not found at ${APP_DIR}/migrations; aborting." >&2
+  exit 1
+fi
+mapfile -t migration_files < <(
+  find "$APP_DIR/migrations" -maxdepth 1 -type f -name '[0-9][0-9][0-9][0-9]_*.sql' | sort
+)
+if [[ "${#migration_files[@]}" -eq 0 ]]; then
+  echo "No migrations found in ${APP_DIR}/migrations; aborting." >&2
+  exit 1
+fi
+for f in "${migration_files[@]}"; do
+  echo "  - $(basename "$f")"
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f" >/dev/null
+done
 
 echo "[6/8] Seed initial writer user (zacharytomlinson@palodurosystems.io)..."
 SEED_WRITER_EMAIL="${SEED_WRITER_EMAIL:-zacharytomlinson@palodurosystems.io}"

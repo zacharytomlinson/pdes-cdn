@@ -58,12 +58,6 @@
     <div id="create-app-panel" class="stack" hidden style="margin-top: 14px; border-top: 1px dashed rgba(31,41,55,0.85); padding-top: 14px;">
         <div class="inline-actions">
             <h3 style="margin: 0;">Create app</h3>
-            <a class="pill-action icon-link" href="/apps/manage" data-close-create-app aria-label="Close">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                    <path d="M18 6L6 18"/>
-                    <path d="M6 6l12 12"/>
-                </svg>
-            </a>
         </div>
         <form method="post" action="/apps/create">
             <div class="stack">
@@ -491,12 +485,6 @@
     event.preventDefault();
     if (panel.hidden) show(); else hide();
   });
-  document.addEventListener("click", (event) => {
-    const close = event.target.closest("[data-close-create-app]");
-    if (!close) return;
-    event.preventDefault();
-    hide();
-  });
 })();
 
 (() => {
@@ -591,6 +579,18 @@
     } catch (_) {
       window.prompt("Copy download URL:", url);
     }
+  });
+})();
+
+(() => {
+  const params = new URLSearchParams(window.location.search);
+  if (!params.has("edit") && !params.has("app")) return;
+  const selected = document.querySelector("details.app-card.selected");
+  if (!selected) return;
+  const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const behavior = prefersReducedMotion ? "auto" : "smooth";
+  requestAnimationFrame(() => {
+    selected.scrollIntoView({ behavior, block: "start" });
   });
 })();
 </script>

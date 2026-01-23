@@ -44,7 +44,6 @@ struct AppState {
     templates: Tera,
     cache_dir: PathBuf,
     cookie_key: Key,
-    file_list_cache: Cache<String, Vec<CachedFile>>,
     file_by_id_cache: Cache<Uuid, CachedFile>,
 }
 
@@ -225,74 +224,6 @@ struct CachedFile {
     created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-struct CachedFileView {
-    id: Uuid,
-    filename: String,
-    bucket: String,
-    size: Option<String>,
-    created_at: String,
-}
-
-impl From<&CachedFile> for CachedFileView {
-    fn from(file: &CachedFile) -> Self {
-        let bucket = std::path::Path::new(&file.local_path)
-            .parent()
-            .and_then(|p| p.to_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("-")
-            .to_string();
-        let size = file.size_bytes.map(format_bytes);
-        let created_at = file.created_at.format("%Y-%m-%d %H:%M UTC").to_string();
-        Self {
-            id: file.id,
-            filename: file.filename.clone(),
-            bucket,
-            size,
-            created_at,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct ListFilesQuery {
-    q: Option<String>,
-    bucket: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-struct DirSummary {
-    path: String,
-    file_count: usize,
-    total_bytes: i64,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-struct DirSummaryView {
-    path: String,
-    file_count: usize,
-    total: String,
-}
-
-#[derive(Debug, Clone, FromRow, serde::Serialize)]
-struct ProjectToken {
-    id: Uuid,
-    project: String,
-    bucket: String,
-    token: String,
-    created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-struct BucketView {
-    id: Uuid,
-    project: String,
-    bucket: String,
-    token: String,
-    created_at: DateTime<Utc>,
-    files: Vec<CachedFile>,
-}
-
 #[derive(Debug, Deserialize)]
 struct LoginForm {
     email: String,
@@ -308,12 +239,6 @@ struct ResetRequestForm {
 struct ResetConfirmForm {
     password: String,
     confirm_password: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct CreateBucketForm {
-    project: String,
-    bucket: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -555,10 +480,6 @@ async fn main() -> AppResult<()> {
         templates,
         cache_dir,
         cookie_key: Key::from(&key_bytes),
-        file_list_cache: Cache::builder()
-            .max_capacity(64)
-            .time_to_live(StdDuration::from_secs(30))
-            .build(),
         file_by_id_cache: Cache::builder()
             .max_capacity(512)
             .time_to_live(StdDuration::from_secs(60))
@@ -609,14 +530,7 @@ async fn main() -> AppResult<()> {
             "/tokens/app-upload/:id/revoke",
             post(revoke_app_upload_token),
         )
-        .route("/files", get(list_files))
-        .route("/files/:id/delete", post(delete_file))
-        .route("/cache-summary", get(cache_summary))
-        .route("/buckets", axum::routing::post(create_bucket))
-        .route("/buckets/:id/delete", post(delete_bucket))
         .route("/invite", axum::routing::post(invite_user))
-        .route("/upload", axum::routing::post(upload_file))
-        .route("/api/upload", axum::routing::post(api_upload))
         .route("/api/apps/:slug/package/latest", get(api_latest_package))
         .route(
             "/api/apps/:slug/package/upload",
@@ -637,7 +551,6 @@ async fn main() -> AppResult<()> {
             post(bootstrap_exchange_device_token),
         )
         .route("/bootstrap/:token/pkg", get(bootstrap_download_pkg))
-        .route("/download/:id", get(download_file))
         .layer(DefaultBodyLimit::max(max_upload_bytes))
         .layer(TraceLayer::new_for_http())
         .layer(
@@ -930,432 +843,6 @@ async fn portal(State(state): State<AppState>, jar: SignedCookieJar) -> AppResul
     Ok((jar, response).into_response())
 }
 
-async fn render_portal_with_toast(
-    state: &AppState,
-    user: &User,
-    toast_error: Option<&str>,
-    toast_success: Option<&str>,
-) -> AppResult<Response> {
-    let buckets = if is_writer(user) {
-        fetch_buckets(state).await?
-    } else {
-        Vec::new()
-    };
-
-    let mut ctx = TeraContext::new();
-    ctx.insert("user_email", &user.email);
-    ctx.insert("files_endpoint", "/files");
-    ctx.insert("cache_summary_endpoint", "/cache-summary");
-    ctx.insert("can_write", &is_writer(user));
-    ctx.insert("buckets", &buckets);
-    if let Some(message) = toast_error {
-        ctx.insert("toast_error", message);
-    }
-    if let Some(message) = toast_success {
-        ctx.insert("toast_success", message);
-    }
-
-    let html = render_template(state, "portal.html", ctx)?;
-    Ok(html.into_response())
-}
-
-async fn list_files(
-    State(state): State<AppState>,
-    jar: SignedCookieJar,
-    headers: HeaderMap,
-    Query(query): Query<ListFilesQuery>,
-) -> AppResult<Response> {
-    let Some(user) = current_user(&state, &jar).await? else {
-        warn!("list_files: unauthenticated, redirecting to login");
-        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
-        return Ok((jar, Redirect::to("/login")).into_response());
-    };
-    if !is_writer(&user) {
-        warn!(user_id = %user.id, email = %user.email, "list_files: forbidden (not writer)");
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "Writer permission required",
-        ));
-    }
-    let hx = is_hx_request(&headers);
-    info!(
-        user_id = %user.id,
-        email = %user.email,
-        hx = %hx,
-        q = ?query.q,
-        bucket = ?query.bucket,
-        "list_files"
-    );
-
-    let files = fetch_files(&state).await?;
-    let selected_bucket = query
-        .bucket
-        .as_ref()
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty());
-    let filtered_by_bucket: Vec<CachedFile> = match selected_bucket {
-        Some(bucket) => files
-            .into_iter()
-            .filter(|file| {
-                bucket_path_from_local(&file.local_path)
-                    .as_ref()
-                    .is_some_and(|path| path == bucket)
-            })
-            .collect(),
-        None => files,
-    };
-    let filtered: Vec<CachedFile> =
-        match query.q.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
-            Some(q) => {
-                let q = q.to_ascii_lowercase();
-                filtered_by_bucket
-                    .into_iter()
-                    .filter(|f| {
-                        f.filename.to_ascii_lowercase().contains(&q)
-                            || f.local_path.to_ascii_lowercase().contains(&q)
-                    })
-                    .collect()
-            }
-            None => filtered_by_bucket,
-        };
-
-    let file_views: Vec<CachedFileView> = filtered.iter().map(CachedFileView::from).collect();
-    let mut ctx = TeraContext::new();
-    ctx.insert("files", &file_views);
-    ctx.insert("q", &query.q);
-    ctx.insert("selected_bucket", &query.bucket);
-    ctx.insert("can_write", &is_writer(&user));
-    if is_writer(&user) {
-        let buckets = fetch_buckets(&state).await?;
-        ctx.insert("buckets", &buckets);
-    }
-
-    if !hx {
-        return Ok((jar, Redirect::to("/portal")).into_response());
-    }
-
-    let html = render_template(&state, "partials/file_table.html", ctx)?;
-    Ok((jar, html).into_response())
-}
-
-fn format_bytes(bytes: i64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-
-    let b = bytes.max(0) as f64;
-    if b >= GB {
-        format!("{:.2} GB", b / GB)
-    } else if b >= MB {
-        format!("{:.2} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.1} KB", b / KB)
-    } else {
-        format!("{} B", bytes.max(0))
-    }
-}
-
-async fn cache_summary(
-    State(state): State<AppState>,
-    jar: SignedCookieJar,
-    headers: HeaderMap,
-) -> AppResult<Response> {
-    let Some(user) = current_user(&state, &jar).await? else {
-        warn!("cache_summary: unauthenticated, redirecting to login");
-        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
-        return Ok((jar, Redirect::to("/login")).into_response());
-    };
-    if !is_writer(&user) {
-        warn!(user_id = %user.id, email = %user.email, "cache_summary: forbidden (not writer)");
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "Writer permission required",
-        ));
-    }
-    info!(user_id = %user.id, email = %user.email, hx = %is_hx_request(&headers), "cache_summary");
-
-    let files = fetch_files(&state).await?;
-    let directories = summarize_directories(&files);
-    let directory_views: Vec<DirSummaryView> = directories
-        .into_iter()
-        .map(|d| DirSummaryView {
-            path: d.path,
-            file_count: d.file_count,
-            total: format_bytes(d.total_bytes),
-        })
-        .collect();
-    let mut ctx = TeraContext::new();
-    ctx.insert("directories", &directory_views);
-    if is_writer(&user) {
-        let buckets = fetch_buckets(&state).await?;
-        let bucket_tree = build_bucket_views(&files, &buckets)?;
-        ctx.insert("bucket_tree", &bucket_tree);
-    }
-
-    if !is_hx_request(&headers) {
-        return Ok((jar, Redirect::to("/portal")).into_response());
-    }
-
-    let html = render_template(&state, "partials/cache_summary.html", ctx)?;
-    Ok((jar, html).into_response())
-}
-
-async fn upload_file(
-    State(state): State<AppState>,
-    jar: SignedCookieJar,
-    mut multipart: Multipart,
-) -> AppResult<Response> {
-    let Some(user) = current_user(&state, &jar).await? else {
-        warn!("upload_file: unauthenticated, redirecting to login");
-        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
-        return Ok((jar, Redirect::to("/login")).into_response());
-    };
-    if !is_writer(&user) {
-        warn!(user_id = %user.id, email = %user.email, "upload_file: forbidden (not writer)");
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "Writer permission required",
-        ));
-    }
-
-    let mut bucket_path: Option<String> = None;
-    let mut handled = false;
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid upload payload"))?
-    {
-        match field.name() {
-            Some("file") => {
-                let Some(bucket_path) = bucket_path.clone() else {
-                    return render_portal_with_toast(
-                        &state,
-                        &user,
-                        Some("Select a target bucket before uploading"),
-                        None,
-                    )
-                    .await;
-                };
-                if let Err(err) = save_upload(&state, field, Some(bucket_path), None).await {
-                    return render_portal_with_toast(&state, &user, Some(&err.message), None).await;
-                }
-                handled = true;
-                break;
-            }
-            Some("bucket_path") => {
-                if let Some(val) = field
-                    .text()
-                    .await
-                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid bucket value"))?
-                    .split_whitespace()
-                    .next()
-                    .map(|s| sanitize_bucket(s))
-                {
-                    if val.is_empty() || val == "root" {
-                        return render_portal_with_toast(
-                            &state,
-                            &user,
-                            Some("Select a valid target bucket"),
-                            None,
-                        )
-                        .await;
-                    }
-                    let mut parts = val.split('/');
-                    let project = parts.next().unwrap_or_default();
-                    let bucket = parts.next().unwrap_or_default();
-                    if project.is_empty() || bucket.is_empty() || parts.next().is_some() {
-                        return render_portal_with_toast(
-                            &state,
-                            &user,
-                            Some("Bucket must be in the form project/bucket"),
-                            None,
-                        )
-                        .await;
-                    }
-                    bucket_path = Some(format!("{}/{}", project, bucket));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if !handled {
-        return render_portal_with_toast(&state, &user, Some("No file provided"), None).await;
-    }
-
-    state.file_list_cache.invalidate_all();
-    state.file_by_id_cache.invalidate_all();
-    info!(user_id = %user.id, email = %user.email, bucket = ?bucket_path, "upload complete");
-    Ok((jar, Redirect::to("/portal")).into_response())
-}
-
-async fn api_upload(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    mut multipart: Multipart,
-) -> AppResult<Response> {
-    let token = extract_bearer(&headers).ok_or_else(|| {
-        AppError::new_plain(
-            StatusCode::UNAUTHORIZED,
-            "Bearer token required for API upload",
-        )
-    })?;
-    let token_prefix: String = token.chars().take(8).collect();
-
-    let record = sqlx::query_as::<_, ProjectToken>(
-        "select id, project, bucket, token, created_at from project_tokens where token = $1",
-    )
-    .bind(&token)
-    .fetch_optional(&state.pool)
-    .await?;
-
-    let Some(record) = record else {
-        warn!(token_prefix = %token_prefix, "api_upload: invalid token");
-        return Err(AppError::new_plain(
-            StatusCode::UNAUTHORIZED,
-            "Invalid upload token",
-        ));
-    };
-    info!(token_prefix = %token_prefix, project = %record.project, bucket = %record.bucket, "api_upload: token accepted");
-
-    let mut handled = false;
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|_| AppError::new_plain(StatusCode::BAD_REQUEST, "Invalid upload payload"))?
-    {
-        if field.name() == Some("file") {
-            let bucket_path = format!(
-                "{}/{}",
-                sanitize_bucket(&record.project),
-                sanitize_bucket(&record.bucket)
-            );
-            save_upload(&state, field, Some(bucket_path), Some(record.token.clone())).await?;
-            handled = true;
-            break;
-        }
-    }
-
-    if !handled {
-        return Err(AppError::new_plain(
-            StatusCode::BAD_REQUEST,
-            "No file provided",
-        ));
-    }
-
-    state.file_list_cache.invalidate_all();
-    state.file_by_id_cache.invalidate_all();
-    info!(token_prefix = %token_prefix, project = %record.project, bucket = %record.bucket, "api_upload complete");
-    Ok(StatusCode::OK.into_response())
-}
-
-async fn delete_file(
-    Path(id): Path<Uuid>,
-    State(state): State<AppState>,
-    jar: SignedCookieJar,
-) -> AppResult<Response> {
-    let Some(user) = current_user(&state, &jar).await? else {
-        warn!("delete_file: unauthenticated, redirecting to login");
-        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
-        return Ok((jar, Redirect::to("/login")).into_response());
-    };
-    if !is_writer(&user) {
-        warn!(user_id = %user.id, email = %user.email, file_id = %id, "delete_file: forbidden (not writer)");
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "Writer permission required",
-        ));
-    }
-
-    let file = fetch_file_by_id(&state, id).await?;
-    let Some(file) = file else {
-        return render_portal_with_toast(&state, &user, Some("File not found"), None).await;
-    };
-
-    if let Some(path) = resolve_cache_path(&state, &file.local_path).await? {
-        let _ = tokio::fs::remove_file(path).await;
-    }
-
-    sqlx::query("delete from cached_files where id = $1")
-        .bind(file.id)
-        .execute(&state.pool)
-        .await?;
-
-    state.file_list_cache.invalidate_all();
-    state.file_by_id_cache.invalidate_all();
-    info!(user_id = %user.id, email = %user.email, file_id = %file.id, "file deleted");
-
-    Ok((jar, Redirect::to("/portal")).into_response())
-}
-
-async fn delete_bucket(
-    Path(id): Path<Uuid>,
-    State(state): State<AppState>,
-    jar: SignedCookieJar,
-) -> AppResult<Response> {
-    let Some(user) = current_user(&state, &jar).await? else {
-        warn!("delete_bucket: unauthenticated, redirecting to login");
-        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
-        return Ok((jar, Redirect::to("/login")).into_response());
-    };
-    if !is_writer(&user) {
-        warn!(user_id = %user.id, email = %user.email, bucket_id = %id, "delete_bucket: forbidden (not writer)");
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "Writer permission required",
-        ));
-    }
-
-    let record = sqlx::query_as::<_, ProjectToken>(
-        "select id, project, bucket, token, created_at from project_tokens where id = $1",
-    )
-    .bind(id)
-    .fetch_optional(&state.pool)
-    .await?;
-
-    let Some(record) = record else {
-        return render_portal_with_toast(&state, &user, Some("Bucket not found"), None).await;
-    };
-
-    let prefix = format!(
-        "{}/{}",
-        sanitize_bucket(&record.project),
-        sanitize_bucket(&record.bucket)
-    );
-    let files = sqlx::query_as::<_, CachedFile>(
-        "select id, filename, local_path, size_bytes, created_at from cached_files where local_path like $1 || '/%'",
-    )
-    .bind(&prefix)
-    .fetch_all(&state.pool)
-    .await?;
-
-    for file in files {
-        if let Some(path) = resolve_cache_path(&state, &file.local_path).await? {
-            let _ = tokio::fs::remove_file(path).await;
-        }
-        let _ = sqlx::query("delete from cached_files where id = $1")
-            .bind(file.id)
-            .execute(&state.pool)
-            .await;
-    }
-
-    let bucket_dir = state.cache_dir.join(&prefix);
-    if bucket_dir.starts_with(&state.cache_dir) {
-        let _ = tokio::fs::remove_dir_all(&bucket_dir).await;
-    }
-
-    sqlx::query("delete from project_tokens where id = $1")
-        .bind(record.id)
-        .execute(&state.pool)
-        .await?;
-
-    state.file_list_cache.invalidate_all();
-    state.file_by_id_cache.invalidate_all();
-    info!(user_id = %user.id, email = %user.email, bucket_id = %record.id, project = %record.project, bucket = %record.bucket, "bucket deleted");
-
-    Ok((jar, Redirect::to("/portal")).into_response())
-}
-
 async fn invite_user(
     State(state): State<AppState>,
     jar: SignedCookieJar,
@@ -1457,60 +944,6 @@ async fn invite_user(
     let response =
         render_apps_manage_with_toast(&state, &user, None, Some(&toast), Some(&email), None, None)
             .await?;
-    Ok((jar, response).into_response())
-}
-
-async fn download_file(
-    Path(id): Path<Uuid>,
-    State(state): State<AppState>,
-    jar: SignedCookieJar,
-) -> AppResult<Response> {
-    let Some(user) = current_user(&state, &jar).await? else {
-        warn!(file_id = %id, "download_file: unauthenticated, redirecting to login");
-        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
-        return Ok((jar, Redirect::to("/login")).into_response());
-    };
-    if !is_writer(&user) {
-        warn!(user_id = %user.id, email = %user.email, file_id = %id, "download_file: forbidden (not writer)");
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "Writer permission required",
-        ));
-    }
-
-    let file = fetch_file_by_id(&state, id).await?;
-
-    let Some(file) = file else {
-        warn!(file_id = %id, "download_file: file not found");
-        return Err(AppError::new(StatusCode::NOT_FOUND, "File not found"));
-    };
-
-    let path = state.cache_dir.join(&file.local_path);
-    let path = tokio::fs::canonicalize(path)
-        .await
-        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "File missing on disk"))?;
-    if !path.starts_with(&state.cache_dir) {
-        return Err(AppError::new(
-            StatusCode::BAD_REQUEST,
-            "Invalid file location",
-        ));
-    }
-
-    let file_handle = File::open(&path)
-        .await
-        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "File missing on disk"))?;
-    let stream = ReaderStream::new(file_handle);
-    info!(file_id = %file.id, filename = %file.filename, local_path = %file.local_path, "download_file: streaming");
-    let response = Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/octet-stream")
-        .header(
-            header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{}\"", file.filename),
-        )
-        .body(Body::from_stream(stream))
-        .map_err(AppError::from)?;
-
     Ok((jar, response).into_response())
 }
 
@@ -2061,7 +1494,6 @@ async fn update_app(
             .await;
     }
 
-    state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
 
     let return_to = safe_return_to(return_to.as_deref());
@@ -2144,7 +1576,6 @@ async fn delete_app(
         let _ = tokio::fs::remove_dir_all(&app_dir).await;
     }
 
-    state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
 
     let toast = format!("Deleted app {}.", slug);
@@ -2826,7 +2257,6 @@ async fn upload_app_package(
     .execute(&state.pool)
     .await?;
 
-    state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
     let return_to = safe_return_to(return_to.as_deref());
     let return_to = add_query_param(&return_to, "toast_success", "Uploaded package.");
@@ -3191,7 +2621,6 @@ async fn build_app_package(
 
     let _ = tokio::fs::remove_dir_all(&work_dir).await;
     let _ = tokio::fs::remove_file(&pkg_out).await;
-    state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
     let return_to = safe_return_to(return_to.as_deref());
     let return_to = add_query_param(&return_to, "toast_success", "Built package.");
@@ -3305,7 +2734,6 @@ async fn upload_firmware(
     .execute(&state.pool)
     .await?;
 
-    state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
     let return_to = safe_return_to(return_to.as_deref());
     let return_to = add_query_param(&return_to, "toast_success", "Uploaded firmware.");
@@ -4214,7 +3642,6 @@ async fn api_upload_app_package(
     .execute(&state.pool)
     .await?;
 
-    state.file_list_cache.invalidate_all();
     state.file_by_id_cache.invalidate_all();
 
     let payload = serde_json::json!({
@@ -5513,30 +4940,6 @@ async fn ensure_valid_token(state: &AppState, token: &str) -> AppResult<User> {
     Ok(user)
 }
 
-fn is_hx_request(headers: &HeaderMap) -> bool {
-    headers
-        .get("HX-Request")
-        .and_then(|h| h.to_str().ok())
-        .is_some()
-}
-
-async fn fetch_files(state: &AppState) -> AppResult<Vec<CachedFile>> {
-    if let Some(files) = state.file_list_cache.get("all").await {
-        return Ok(files);
-    }
-
-    let files = sqlx::query_as::<_, CachedFile>(
-        "select id, filename, local_path, size_bytes, created_at from cached_files order by created_at desc",
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    state
-        .file_list_cache
-        .insert("all".to_string(), files.clone())
-        .await;
-    Ok(files)
-}
-
 async fn fetch_file_by_id(state: &AppState, id: Uuid) -> AppResult<Option<CachedFile>> {
     if let Some(file) = state.file_by_id_cache.get(&id).await {
         return Ok(Some(file));
@@ -5554,172 +4957,6 @@ async fn fetch_file_by_id(state: &AppState, id: Uuid) -> AppResult<Option<Cached
     }
 
     Ok(file)
-}
-
-async fn fetch_buckets(state: &AppState) -> AppResult<Vec<ProjectToken>> {
-    let tokens = sqlx::query_as::<_, ProjectToken>(
-        "select id, project, bucket, token, created_at from project_tokens order by project, bucket",
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    Ok(tokens)
-}
-
-fn build_bucket_views(
-    files: &[CachedFile],
-    buckets: &[ProjectToken],
-) -> AppResult<Vec<BucketView>> {
-    let mut views: Vec<BucketView> = buckets
-        .iter()
-        .map(|b| BucketView {
-            id: b.id,
-            project: b.project.clone(),
-            bucket: b.bucket.clone(),
-            token: b.token.clone(),
-            created_at: b.created_at,
-            files: Vec::new(),
-        })
-        .collect();
-
-    let mut root_files: Vec<CachedFile> = Vec::new();
-    for file in files {
-        if let Some(path) = bucket_path_from_local(&file.local_path) {
-            if let Some(view) = views
-                .iter_mut()
-                .find(|v| format!("{}/{}", v.project, v.bucket) == path)
-            {
-                view.files.push(file.clone());
-                continue;
-            }
-        }
-        root_files.push(file.clone());
-    }
-
-    if !root_files.is_empty() {
-        views.push(BucketView {
-            id: Uuid::nil(),
-            project: "root".to_string(),
-            bucket: "root".to_string(),
-            token: "-".to_string(),
-            created_at: Utc::now(),
-            files: root_files,
-        });
-    }
-
-    views.sort_by(|a, b| a.project.cmp(&b.project).then(a.bucket.cmp(&b.bucket)));
-    Ok(views)
-}
-
-fn summarize_directories(files: &[CachedFile]) -> Vec<DirSummary> {
-    let mut map: HashMap<String, (usize, i64)> = HashMap::new();
-    for file in files {
-        let dir = PathBuf::from(&file.local_path)
-            .parent()
-            .map(|p| p.display().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| ".".to_string());
-        let entry = map.entry(dir).or_insert((0, 0));
-        entry.0 += 1;
-        if let Some(size) = file.size_bytes {
-            entry.1 += size;
-        }
-    }
-
-    let mut out: Vec<DirSummary> = map
-        .into_iter()
-        .map(|(path, (file_count, total_bytes))| DirSummary {
-            path,
-            file_count,
-            total_bytes,
-        })
-        .collect();
-    out.sort_by(|a, b| b.file_count.cmp(&a.file_count));
-    out
-}
-
-async fn save_upload(
-    state: &AppState,
-    mut field: axum::extract::multipart::Field<'_>,
-    bucket_path: Option<String>,
-    token_used: Option<String>,
-) -> AppResult<()> {
-    let file_name = field
-        .file_name()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "upload.bin".to_string());
-    let clean = sanitize_filename(&file_name);
-    let ext = std::path::Path::new(&clean)
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    if ext != "bin" && ext != "elf" && ext != "msi" && ext != "deb" {
-        return Err(AppError::new(
-            StatusCode::BAD_REQUEST,
-            "Only .bin, .elf, .msi, and .deb uploads are allowed",
-        ));
-    }
-
-    let file_id = Uuid::new_v4();
-    let Some(prefix) = bucket_path else {
-        return Err(AppError::new(
-            StatusCode::BAD_REQUEST,
-            "Bucket path is required",
-        ));
-    };
-    let stored_name = format!("{}-{}", file_id, clean);
-    let relative_path = format!("{}/{}", prefix, stored_name);
-    let dest_path = state.cache_dir.join(&relative_path);
-
-    if let Some(parent) = dest_path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| {
-            AppError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Could not create directory {}: {}", parent.display(), e),
-            )
-        })?;
-    }
-
-    let mut dest = File::create(&dest_path).await.map_err(|e| {
-        AppError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Could not create file {}: {}", dest_path.display(), e),
-        )
-    })?;
-    let mut size: i64 = 0;
-
-    while let Some(chunk) = field
-        .chunk()
-        .await
-        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Failed reading upload"))?
-    {
-        size += chunk.len() as i64;
-        dest.write_all(&chunk).await.map_err(|e| {
-            AppError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed writing upload to {}: {}", dest_path.display(), e),
-            )
-        })?;
-    }
-
-    sqlx::query(
-        "insert into cached_files (id, filename, local_path, size_bytes) values ($1, $2, $3, $4)",
-    )
-    .bind(file_id)
-    .bind(clean)
-    .bind(relative_path)
-    .bind(size)
-    .execute(&state.pool)
-    .await?;
-
-    if let Some(token) = token_used {
-        let _ = sqlx::query("update project_tokens set created_at = created_at where token = $1")
-            .bind(token)
-            .execute(&state.pool)
-            .await;
-    }
-
-    Ok(())
 }
 
 async fn ensure_writable_cache_root(cache_dir: &std::path::Path) -> AppResult<()> {
@@ -5797,17 +5034,6 @@ fn sanitize_bucket(name: &str) -> String {
         }
     }
     out.trim_matches('_').trim_matches('/').to_string()
-}
-
-fn bucket_path_from_local(local_path: &str) -> Option<String> {
-    let mut parts = local_path.split('/');
-    let project = parts.next()?;
-    let bucket = parts.next()?;
-    if project.is_empty() || bucket.is_empty() {
-        None
-    } else {
-        Some(format!("{}/{}", project, bucket))
-    }
 }
 
 fn is_writer(user: &User) -> bool {
@@ -6089,77 +5315,4 @@ fn render_login_error(state: &AppState, message: &str) -> AppResult<Html<String>
     let mut ctx = TeraContext::new();
     ctx.insert("error", message);
     render_template(state, "login.html", ctx)
-}
-async fn create_bucket(
-    State(state): State<AppState>,
-    jar: SignedCookieJar,
-    Form(form): Form<CreateBucketForm>,
-) -> AppResult<Response> {
-    let Some(user) = current_user(&state, &jar).await? else {
-        warn!("create_bucket: unauthenticated, redirecting to login");
-        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
-        return Ok((jar, Redirect::to("/login")).into_response());
-    };
-    if !is_writer(&user) {
-        warn!(user_id = %user.id, email = %user.email, "create_bucket: forbidden (not writer)");
-        return Err(AppError::new(
-            StatusCode::FORBIDDEN,
-            "Writer permission required",
-        ));
-    }
-
-    let project = sanitize_bucket(&form.project);
-    let bucket = sanitize_bucket(&form.bucket);
-    if project.is_empty() || bucket.is_empty() {
-        return render_portal_with_toast(
-            &state,
-            &user,
-            Some("Project and bucket are required"),
-            None,
-        )
-        .await;
-    }
-
-    let token: String = rand::thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(48)
-        .map(char::from)
-        .collect();
-    let id = Uuid::new_v4();
-
-    if let Err(err) = sqlx::query(
-        "insert into project_tokens (id, project, bucket, token) values ($1, $2, $3, $4)",
-    )
-    .bind(id)
-    .bind(&project)
-    .bind(&bucket)
-    .bind(&token)
-    .execute(&state.pool)
-    .await
-    .map_err(|e| {
-        AppError::new(
-            StatusCode::BAD_REQUEST,
-            format!("Could not create bucket: {}", e),
-        )
-    }) {
-        return render_portal_with_toast(&state, &user, Some(&err.message), None).await;
-    }
-
-    state.file_list_cache.invalidate_all();
-    state.file_by_id_cache.invalidate_all();
-    info!(user_id = %user.id, email = %user.email, bucket_id = %id, project = %project, bucket = %bucket, token_prefix = %token.chars().take(8).collect::<String>(), "bucket created");
-
-    let buckets = fetch_buckets(&state).await?;
-    let mut ctx = TeraContext::new();
-    ctx.insert("user_email", &user.email);
-    ctx.insert("files_endpoint", "/files");
-    ctx.insert("cache_summary_endpoint", "/cache-summary");
-    ctx.insert("can_write", &true);
-    ctx.insert("buckets", &buckets);
-    ctx.insert("new_token", &token);
-    ctx.insert("new_bucket_path", &format!("{}/{}", project, bucket));
-    ctx.insert("toast_success", &format!("Created {}/{}.", project, bucket));
-
-    let html = render_template(&state, "portal.html", ctx)?;
-    Ok((jar, html).into_response())
 }

@@ -1,6 +1,6 @@
-# PDES CDN Node
+# PDES Appstore Node
 
-`pdes-cdn` is a small self-hosted CDN node with a web portal and an API for uploading artifacts into per-project/per-bucket directories on disk.
+`pdes-cdn` is a small self-hosted appstore/CDN node with a web portal and API for distributing desktop app packages and firmware.
 
 ## Quick deploy (Debian node)
 
@@ -103,14 +103,12 @@ The installer seeds an initial writer user so you can log in and finish setup. T
 ## Using the portal
 
 - Visit `https://<your-domain>/login`
-- Create project buckets in the UI (each bucket gets an upload token)
-- Upload artifacts via the web form into a selected project/bucket
+- Writers can manage apps at `GET /apps/manage` and create tokens at `GET /tokens`.
+- Readers can view assigned apps at `GET /apps`.
 
 ## API uploads (CI/pipelines)
 
 For CI uploading app packages into the app store, create an **app upload token** at `GET /tokens` (writer UI) and use it with `POST /api/apps/<slug>/package/upload` (see below).
-
-The older generic file upload endpoint `POST /api/upload` still exists, but it expects a *project upload token* (stored in `project_tokens`) and may not be exposed in the current UI.
 
 ## Desktop app update API (packages + firmware)
 
