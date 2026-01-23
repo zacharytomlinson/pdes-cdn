@@ -28,6 +28,26 @@
 </div>
 
 <section class="card">
+    <h2 style="margin-top: 0;">Target</h2>
+    <p class="muted" style="margin-top: 6px;">Select the OS/arch you want this token + installer link to target.</p>
+    <form method="get" action="/apps/{{ app_slug }}/download/bootstrap" style="margin-top: 10px;">
+        <div class="stack">
+            <label for="target">Target</label>
+            <select id="target" name="target">
+                {% for t in targets %}
+                    <option value="{{ t.os }}:{{ t.arch }}" {% if t.os == os and t.arch == arch %}selected{% endif %}>
+                        {{ t.os | upper }} ({{ t.arch }}) · {{ t.version }}
+                    </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="inline-actions">
+            <button type="submit" class="icon-btn btn-compact secondary">Switch target</button>
+        </div>
+    </form>
+</section>
+
+<section class="card" style="margin-top: 16px;">
     <h2 style="margin-top: 0;">Update token</h2>
     <p class="muted" style="margin-top: 6px;">Copy this token now (shown once). Paste it into the desktop app to enable update checks and firmware downloads.</p>
     <div class="alert success" style="margin-top: 12px;">

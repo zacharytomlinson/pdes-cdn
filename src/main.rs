@@ -2375,12 +2375,12 @@ async fn download_bootstrap(
 
     let requested = parse_target_query(&query).or_else(|| detect_target_from_user_agent(&headers));
 
-    let record: Option<(String, Uuid, String, String, String)> = match (is_writer(&user), requested)
-    {
+    let record: Option<(Uuid, String, Uuid, String, String, String)> =
+        match (is_writer(&user), requested) {
         (true, Some((os, arch))) => {
-            sqlx::query_as::<_, (String, Uuid, String, String, String)>(
+            sqlx::query_as::<_, (Uuid, String, Uuid, String, String, String)>(
                 r#"
-                select a.name, p.pkg_file_id, p.version, p.os, p.arch
+                select a.id, a.name, p.pkg_file_id, p.version, p.os, p.arch
                 from apps a
                 join app_packages p on p.app_id = a.id
                 where a.slug = $1 and p.os = $2 and (p.arch = $3 or p.arch = 'any')
@@ -2395,9 +2395,9 @@ async fn download_bootstrap(
             .await?
         }
         (false, Some((os, arch))) => {
-            sqlx::query_as::<_, (String, Uuid, String, String, String)>(
+            sqlx::query_as::<_, (Uuid, String, Uuid, String, String, String)>(
                 r#"
-                select a.name, p.pkg_file_id, p.version, p.os, p.arch
+                select a.id, a.name, p.pkg_file_id, p.version, p.os, p.arch
                 from apps a
                 join app_assignments aa on aa.app_id = a.id
                 join app_packages p on p.app_id = a.id
@@ -2414,9 +2414,9 @@ async fn download_bootstrap(
             .await?
         }
         (true, None) => {
-            sqlx::query_as::<_, (String, Uuid, String, String, String)>(
+            sqlx::query_as::<_, (Uuid, String, Uuid, String, String, String)>(
                 r#"
-                select a.name, p.pkg_file_id, p.version, p.os, p.arch
+                select a.id, a.name, p.pkg_file_id, p.version, p.os, p.arch
                 from apps a
                 join app_packages p on p.app_id = a.id
                 where a.slug = $1
@@ -2429,9 +2429,9 @@ async fn download_bootstrap(
             .await?
         }
         (false, None) => {
-            sqlx::query_as::<_, (String, Uuid, String, String, String)>(
+            sqlx::query_as::<_, (Uuid, String, Uuid, String, String, String)>(
                 r#"
-                select a.name, p.pkg_file_id, p.version, p.os, p.arch
+                select a.id, a.name, p.pkg_file_id, p.version, p.os, p.arch
                 from apps a
                 join app_assignments aa on aa.app_id = a.id
                 join app_packages p on p.app_id = a.id
@@ -2447,9 +2447,25 @@ async fn download_bootstrap(
         }
     };
 
-    let Some((app_name, _pkg_file_id, pkg_version, os, arch)) = record else {
+    let Some((app_id, app_name, _pkg_file_id, pkg_version, os, arch)) = record else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "Package not found"));
     };
+
+    let targets = sqlx::query_as::<_, (String, String, String)>(
+        r#"
+        select distinct on (os, arch) os, arch, version
+        from app_packages
+        where app_id = $1
+        order by os, arch, created_at desc
+        "#,
+    )
+    .bind(app_id)
+    .fetch_all(&state.pool)
+    .await?;
+    let targets: Vec<AppTargetView> = targets
+        .into_iter()
+        .map(|(os, arch, version)| AppTargetView { os, arch, version })
+        .collect();
 
     let token_name = format!("Bootstrap {} ({}/{})", slug, os, arch);
     let token = mint_api_token_for_user(&state, user.id, &token_name).await?;
@@ -2463,6 +2479,7 @@ async fn download_bootstrap(
     ctx.insert("os", &os);
     ctx.insert("arch", &arch);
     ctx.insert("pkg_version", &pkg_version);
+    ctx.insert("targets", &targets);
     ctx.insert("download_url", &download_url);
     ctx.insert("new_token_name", &token_name);
     ctx.insert("new_token", &token);
@@ -5037,7 +5054,11 @@ fn detect_target_from_user_agent(headers: &HeaderMap) -> Option<(String, String)
         return None;
     };
 
-    let arch = if ua.contains("aarch64") || ua.contains("arm64") {
+    let arch = if ua.contains("aarch64")
+        || ua.contains("arm64")
+        || ua.contains("armv8")
+        || ua.contains("armv8l")
+    {
         "aarch64"
     } else if ua.contains("x86_64")
         || ua.contains("amd64")
