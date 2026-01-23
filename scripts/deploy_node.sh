@@ -9,6 +9,7 @@
 # Optional flags:
 #   --app-dir /opt/pdes-cdn
 #   --service pdes-cdn
+#   --migrations ./migrations
 #   --dry-run
 
 set -euo pipefail
@@ -37,6 +38,7 @@ APP_DIR="/opt/pdes-cdn"
 SERVICE_NAME="pdes-cdn"
 BIN_SRC=""
 TEMPLATES_SRC=""
+MIGRATIONS_DIR=""
 DRY_RUN=0
 SKIP_MIGRATIONS=0
 
@@ -46,6 +48,7 @@ while [[ $# -gt 0 ]]; do
     --service) SERVICE_NAME="${2:-}"; shift 2 ;;
     --bin) BIN_SRC="${2:-}"; shift 2 ;;
     --templates) TEMPLATES_SRC="${2:-}"; shift 2 ;;
+    --migrations) MIGRATIONS_DIR="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --skip-migrations) SKIP_MIGRATIONS=1; shift ;;
     -h|--help)
@@ -70,6 +73,7 @@ echo "  APP_DIR=${APP_DIR}"
 echo "  SERVICE_NAME=${SERVICE_NAME}"
 echo "  BIN_SRC=${BIN_SRC}"
 echo "  TEMPLATES_SRC=${TEMPLATES_SRC}"
+echo "  MIGRATIONS_DIR=${MIGRATIONS_DIR:-auto}"
 echo "  APP_USER=${APP_USER}"
 echo "  APP_GROUP=${APP_GROUP}"
 echo "  DRY_RUN=${DRY_RUN}"
@@ -94,88 +98,17 @@ rm -rf "${APP_DIR}/templates"
 mv -f "${APP_DIR}/templates.new" "${APP_DIR}/templates"
 
 if [[ "$SKIP_MIGRATIONS" != "1" ]]; then
-  ENV_FILE="/etc/${SERVICE_NAME}.env"
-  if [[ ! -f "$ENV_FILE" && -f /etc/pdes-cdn.env ]]; then
-    ENV_FILE="/etc/pdes-cdn.env"
+  script_dir="$(cd "$(dirname "$0")" && pwd)"
+  repo_root="$(cd "${script_dir}/.." && pwd)"
+  if [[ -z "$MIGRATIONS_DIR" && -d "${repo_root}/migrations" ]]; then
+    MIGRATIONS_DIR="${repo_root}/migrations"
   fi
 
-  if [[ -f "$ENV_FILE" ]]; then
-    # shellcheck disable=SC1090
-    source "$ENV_FILE"
-  fi
-
-  if command -v psql >/dev/null 2>&1 && [[ -n "${DATABASE_URL:-}" ]]; then
-    echo "Running migrations (best-effort)..."
-    psql "$DATABASE_URL" >/dev/null <<'SQL'
-create table if not exists apps (
-    id uuid primary key,
-    slug text not null unique,
-    name text not null,
-    description text,
-    created_at timestamptz not null default now()
-);
-
-create table if not exists app_packages (
-    id uuid primary key,
-    app_id uuid not null references apps(id) on delete cascade,
-    version text not null,
-    os text not null default 'unknown',
-    arch text not null default 'x86_64',
-    pkg_file_id uuid not null references cached_files(id) on delete restrict,
-    pkg_sha256 text not null,
-    created_at timestamptz not null default now(),
-    unique (app_id, version, os, arch)
-);
-
-create table if not exists firmware_releases (
-    id uuid primary key,
-    app_id uuid not null references apps(id) on delete cascade,
-    channel text not null default 'stable',
-    version text not null,
-    file_id uuid not null references cached_files(id) on delete restrict,
-    sha256 text not null,
-    created_at timestamptz not null default now(),
-    unique (app_id, channel, version)
-);
-
-create table if not exists app_assignments (
-    app_id uuid not null references apps(id) on delete cascade,
-    user_id uuid not null references users(id) on delete cascade,
-    created_at timestamptz not null default now(),
-    primary key (app_id, user_id)
-);
-
-create index if not exists idx_app_assignments_user on app_assignments(user_id);
-create index if not exists idx_app_packages_app_created_at on app_packages(app_id, created_at desc);
-create index if not exists idx_firmware_releases_app_created_at on firmware_releases(app_id, created_at desc);
-create index if not exists idx_app_packages_sha256 on app_packages(app_id, pkg_sha256);
-create index if not exists idx_firmware_releases_sha256 on firmware_releases(app_id, sha256);
-
-create table if not exists api_tokens (
-    id uuid primary key,
-    user_id uuid not null references users(id) on delete cascade,
-    name text not null default '',
-    token_sha256 text not null unique,
-    created_at timestamptz not null default now(),
-    last_used_at timestamptz
-);
-
-create index if not exists idx_api_tokens_user_id on api_tokens(user_id);
-
--- upgrade existing installs that may have the older (app_id, version) unique constraint
-alter table app_packages
-    add column if not exists os text not null default 'unknown';
-alter table app_packages
-    add column if not exists arch text not null default 'x86_64';
-alter table app_packages
-    drop constraint if exists app_packages_app_id_version_key;
-alter table app_packages
-    drop constraint if exists app_packages_app_id_version_os_arch_key;
-alter table app_packages
-    add constraint app_packages_app_id_version_os_arch_key unique (app_id, version, os, arch);
-SQL
+  if [[ -n "$MIGRATIONS_DIR" && -d "$MIGRATIONS_DIR" && -f "${repo_root}/scripts/run_migrations.sh" ]]; then
+    echo "Running migrations from ${MIGRATIONS_DIR}..."
+    bash "${repo_root}/scripts/run_migrations.sh" --service "${SERVICE_NAME}" --migrations "${MIGRATIONS_DIR}"
   else
-    echo "Skipping migrations (psql not found or DATABASE_URL not set in ${ENV_FILE})."
+    echo "Skipping migrations (migrations dir not available to deploy script)."
   fi
 else
   echo "Skipping migrations (--skip-migrations)."

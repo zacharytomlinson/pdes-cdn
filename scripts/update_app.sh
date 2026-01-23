@@ -213,75 +213,22 @@ if [[ -f "$ENV_FILE" ]]; then
   source "$ENV_FILE"
 fi
 if command -v psql >/dev/null 2>&1 && [[ -n "${DATABASE_URL:-}" ]]; then
-  psql "$DATABASE_URL" >/dev/null <<'SQL'
-create table if not exists apps (
-    id uuid primary key,
-    slug text not null unique,
-    name text not null,
-    description text,
-    icon_file_id uuid references cached_files(id),
-    created_at timestamptz not null default now()
-);
-
-create table if not exists app_packages (
-    id uuid primary key,
-    app_id uuid not null references apps(id) on delete cascade,
-    version text not null,
-    os text not null default 'unknown',
-    arch text not null default 'x86_64',
-    pkg_file_id uuid not null references cached_files(id) on delete restrict,
-    pkg_sha256 text not null,
-    created_at timestamptz not null default now(),
-    unique (app_id, version, os, arch)
-);
-
-create table if not exists firmware_releases (
-    id uuid primary key,
-    app_id uuid not null references apps(id) on delete cascade,
-    channel text not null default 'stable',
-    version text not null,
-    file_id uuid not null references cached_files(id) on delete restrict,
-    sha256 text not null,
-    created_at timestamptz not null default now(),
-    unique (app_id, channel, version)
-);
-
-create table if not exists app_assignments (
-    app_id uuid not null references apps(id) on delete cascade,
-    user_id uuid not null references users(id) on delete cascade,
-    created_at timestamptz not null default now(),
-    primary key (app_id, user_id)
-);
-
-create index if not exists idx_app_assignments_user on app_assignments(user_id);
-create index if not exists idx_app_packages_app_created_at on app_packages(app_id, created_at desc);
-create index if not exists idx_firmware_releases_app_created_at on firmware_releases(app_id, created_at desc);
-create index if not exists idx_app_packages_sha256 on app_packages(app_id, pkg_sha256);
-create index if not exists idx_firmware_releases_sha256 on firmware_releases(app_id, sha256);
-
-create table if not exists api_tokens (
-    id uuid primary key,
-    user_id uuid not null references users(id) on delete cascade,
-    name text not null default '',
-    token_sha256 text not null unique,
-    created_at timestamptz not null default now(),
-    last_used_at timestamptz
-);
-
-create index if not exists idx_api_tokens_user_id on api_tokens(user_id);
-
--- upgrade existing installs that may have the older (app_id, version) unique constraint
-alter table app_packages
-    add column if not exists os text not null default 'unknown';
-alter table app_packages
-    add column if not exists arch text not null default 'x86_64';
-alter table app_packages
-    drop constraint if exists app_packages_app_id_version_key;
-alter table app_packages
-    drop constraint if exists app_packages_app_id_version_os_arch_key;
-alter table app_packages
-    add constraint app_packages_app_id_version_os_arch_key unique (app_id, version, os, arch);
-SQL
+  if [[ -d "${SRC_ROOT}/migrations" ]]; then
+    mapfile -t migration_files < <(
+      find "${SRC_ROOT}/migrations" -maxdepth 1 -type f -name '000*.sql' | sort
+    )
+    if [[ "${#migration_files[@]}" -gt 0 ]]; then
+      echo "Running ${#migration_files[@]} migration file(s) from release tarball..."
+      for f in "${migration_files[@]}"; do
+        echo "  - $(basename "$f")"
+        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f" >/dev/null
+      done
+    else
+      echo "No migrations found in ${SRC_ROOT}/migrations; skipping."
+    fi
+  else
+    echo "Migrations directory not found in release tarball; skipping."
+  fi
 else
   echo "Skipping migrations (psql not found or DATABASE_URL not set in ${ENV_FILE})."
 fi

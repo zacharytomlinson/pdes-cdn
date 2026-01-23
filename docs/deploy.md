@@ -18,6 +18,7 @@ Use a self-hosted GitHub Actions runner inside the VPN (ideally on the Debian no
 - After the GitHub Release is created, the `Deploy (self-hosted)` job runs on the self-hosted runner and calls `scripts/deploy_node.sh` to:
   - install the correct-arch binary,
   - update `templates/`,
+  - run SQL migrations from `migrations/`,
   - restart the systemd service.
 
 ## Manual deploy / rollback (no new release)
