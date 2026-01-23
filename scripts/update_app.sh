@@ -215,7 +215,7 @@ fi
 if command -v psql >/dev/null 2>&1 && [[ -n "${DATABASE_URL:-}" ]]; then
   if [[ -d "${SRC_ROOT}/migrations" ]]; then
     mapfile -t migration_files < <(
-      find "${SRC_ROOT}/migrations" -maxdepth 1 -type f -name '000*.sql' | sort
+      find "${SRC_ROOT}/migrations" -maxdepth 1 -type f -name '[0-9][0-9][0-9][0-9]_*.sql' | sort
     )
     if [[ "${#migration_files[@]}" -gt 0 ]]; then
       echo "Running ${#migration_files[@]} migration file(s) from release tarball..."

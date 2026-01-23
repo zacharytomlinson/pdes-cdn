@@ -3498,6 +3498,8 @@ async fn populate_tokens_context(
     user: &User,
     ctx: &mut TeraContext,
 ) -> AppResult<()> {
+    ctx.insert("app_upload_tokens_missing", &false);
+
     let tokens = sqlx::query_as::<_, ApiTokenRow>(
         "select id, user_id, name, created_at, last_used_at from api_tokens where user_id = $1 order by created_at desc",
     )
@@ -3512,7 +3514,7 @@ async fn populate_tokens_context(
             .await?;
         ctx.insert("apps", &apps);
 
-        let app_upload_tokens = sqlx::query_as::<_, AppUploadTokenRow>(
+        let app_upload_tokens = match sqlx::query_as::<_, AppUploadTokenRow>(
             r#"
             select t.id,
                    a.slug as app_slug,
@@ -3527,7 +3529,18 @@ async fn populate_tokens_context(
             "#,
         )
         .fetch_all(&state.pool)
-        .await?;
+        .await
+        {
+            Ok(rows) => rows,
+            Err(sqlx::Error::Database(db))
+                if db.code().as_deref() == Some("42P01")
+                    && db.message().contains("app_upload_tokens") =>
+            {
+                ctx.insert("app_upload_tokens_missing", &true);
+                Vec::new()
+            }
+            Err(e) => return Err(e.into()),
+        };
         ctx.insert("app_upload_tokens", &app_upload_tokens);
     }
 

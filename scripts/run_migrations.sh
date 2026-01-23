@@ -6,7 +6,7 @@
 #
 # Notes:
 # - Reads DATABASE_URL from /etc/<service>.env (or /etc/pdes-cdn.env fallback).
-# - Executes all 000*.sql files in lexical order.
+# - Executes all ####_*.sql files in lexical order.
 
 set -euo pipefail
 
@@ -51,7 +51,9 @@ fi
 source "$ENV_FILE"
 : "${DATABASE_URL:?DATABASE_URL not set in ${ENV_FILE}}"
 
-mapfile -t migration_files < <(find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '000*.sql' | sort)
+mapfile -t migration_files < <(
+  find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '[0-9][0-9][0-9][0-9]_*.sql' | sort
+)
 [[ "${#migration_files[@]}" -gt 0 ]] || die "No migrations found in ${MIGRATIONS_DIR}"
 
 echo "Running ${#migration_files[@]} migration file(s) from ${MIGRATIONS_DIR}..."
