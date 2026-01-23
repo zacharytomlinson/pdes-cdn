@@ -23,6 +23,6 @@ sha2 = "0.10"
 lettre = { version = "0.11", features = ["tokio1", "tokio1-native-tls", "builder", "smtp-transport"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-tower-http = { version = "0.5", features = ["trace"] }
+tower-http = { version = "0.5", features = ["trace", "cors"] }
 flate2 = "1.0"
 tar = "0.4"

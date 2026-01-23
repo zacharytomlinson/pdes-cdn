@@ -31,6 +31,7 @@ use tera::{Context as TeraContext, Tera};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -414,8 +415,15 @@ struct PkgManifestInstaller {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct PkgManifestIcon {
+    path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct PkgManifest {
     installer: PkgManifestInstaller,
+    #[serde(default)]
+    icon: Option<PkgManifestIcon>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -591,11 +599,21 @@ async fn main() -> AppResult<()> {
             get(api_download_firmware),
         )
         .route("/api/bootstrap/mint", post(api_mint_bootstrap_token))
-        .route("/bootstrap/:token/exchange", post(bootstrap_exchange_device_token))
+        .route(
+            "/bootstrap/:token/exchange",
+            post(bootstrap_exchange_device_token),
+        )
         .route("/bootstrap/:token/pkg", get(bootstrap_download_pkg))
         .route("/download/:id", get(download_file))
         .layer(DefaultBodyLimit::max(max_upload_bytes))
         .layer(TraceLayer::new_for_http())
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+                .allow_headers(Any)
+                .expose_headers([header::CONTENT_DISPOSITION]),
+        )
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
@@ -2126,7 +2144,7 @@ async fn download_latest_pkg(
                 from apps a
                 join app_packages p on p.app_id = a.id
                 where a.slug = $1 and p.os = $2 and (p.arch = $3 or p.arch = 'any')
-                order by (p.arch = $3) desc, p.created_at desc
+                order by p.created_at desc, (p.arch = $3) desc
                 limit 1
                 "#,
             )
@@ -2144,7 +2162,7 @@ async fn download_latest_pkg(
                 join app_assignments aa on aa.app_id = a.id
                 join app_packages p on p.app_id = a.id
                 where a.slug = $1 and aa.user_id = $2 and p.os = $3 and (p.arch = $4 or p.arch = 'any')
-                order by (p.arch = $4) desc, p.created_at desc
+                order by p.created_at desc, (p.arch = $4) desc
                 limit 1
                 "#,
             )
@@ -2221,7 +2239,7 @@ async fn download_installer(
                 from apps a
                 join app_packages p on p.app_id = a.id
                 where a.slug = $1 and p.os = $2 and (p.arch = $3 or p.arch = 'any')
-                order by (p.arch = $3) desc, p.created_at desc
+                order by p.created_at desc, (p.arch = $3) desc
                 limit 1
                 "#,
             )
@@ -2239,7 +2257,7 @@ async fn download_installer(
                 join app_assignments aa on aa.app_id = a.id
                 join app_packages p on p.app_id = a.id
                 where a.slug = $1 and aa.user_id = $2 and p.os = $3 and (p.arch = $4 or p.arch = 'any')
-                order by (p.arch = $4) desc, p.created_at desc
+                order by p.created_at desc, (p.arch = $4) desc
                 limit 1
                 "#,
             )
@@ -2366,7 +2384,7 @@ async fn download_bootstrap(
                 from apps a
                 join app_packages p on p.app_id = a.id
                 where a.slug = $1 and p.os = $2 and (p.arch = $3 or p.arch = 'any')
-                order by (p.arch = $3) desc, p.created_at desc
+                order by p.created_at desc, (p.arch = $3) desc
                 limit 1
                 "#,
             )
@@ -2384,7 +2402,7 @@ async fn download_bootstrap(
                 join app_assignments aa on aa.app_id = a.id
                 join app_packages p on p.app_id = a.id
                 where a.slug = $1 and aa.user_id = $2 and p.os = $3 and (p.arch = $4 or p.arch = 'any')
-                order by (p.arch = $4) desc, p.created_at desc
+                order by p.created_at desc, (p.arch = $4) desc
                 limit 1
                 "#,
             )
@@ -2878,26 +2896,27 @@ async fn build_app_package(
                 installer = Some((filename, bytes.to_vec()));
             }
             Some("icon") => {
-                let filename = field
-                    .file_name()
-                    .map(|s| sanitize_filename(s))
-                    .unwrap_or_else(|| "icon.png".to_string());
-                let ext = std::path::Path::new(&filename)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_ascii_lowercase();
-                if ext != "png" && ext != "svg" {
-                    return Err(AppError::new(
-                        StatusCode::BAD_REQUEST,
-                        "Icon must be .png or .svg",
-                    ));
+                if field.file_name().is_some() {
+                    let filename = field
+                        .file_name()
+                        .map(|s| sanitize_filename(s))
+                        .unwrap_or_else(|| "icon.png".to_string());
+                    let ext = std::path::Path::new(&filename)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_ascii_lowercase();
+                    if ext != "png" && ext != "svg" {
+                        return Err(AppError::new(
+                            StatusCode::BAD_REQUEST,
+                            "Icon must be .png or .svg",
+                        ));
+                    }
+                    let bytes = field.bytes().await.map_err(|_| {
+                        AppError::new(StatusCode::BAD_REQUEST, "Failed reading icon")
+                    })?;
+                    icon = Some((filename, bytes.to_vec()));
                 }
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Failed reading icon"))?;
-                icon = Some((filename, bytes.to_vec()));
             }
             Some("docs") => {
                 let filename = field
@@ -2929,8 +2948,6 @@ async fn build_app_package(
     let arch = arch.unwrap_or_else(|| "x86_64".to_string());
     let (installer_name, installer_bytes) =
         installer.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Installer is required"))?;
-    let (icon_name, icon_bytes) =
-        icon.ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "Icon is required"))?;
 
     let display_name = display_name.unwrap_or_else(|| app_name.clone());
     let summary = summary
@@ -2957,15 +2974,93 @@ async fn build_app_package(
                 format!("Could not write installer: {}", e),
             )
         })?;
-    let icon_path = work_dir.join(&icon_name);
-    tokio::fs::write(&icon_path, &icon_bytes)
-        .await
-        .map_err(|e| {
+
+    let (icon_name, icon_path, should_store_app_icon) = if let Some((icon_name, icon_bytes)) = icon
+    {
+        let icon_path = work_dir.join(&icon_name);
+        tokio::fs::write(&icon_path, &icon_bytes)
+            .await
+            .map_err(|e| {
+                AppError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Could not write icon: {}", e),
+                )
+            })?;
+        (icon_name, icon_path, true)
+    } else {
+        let existing_pkg_path: Option<String> = sqlx::query_scalar(
+            r#"
+            select cf.local_path
+            from app_packages ap
+            join cached_files cf on cf.id = ap.pkg_file_id
+            where ap.app_id = $1 and ap.version = $2 and ap.os = $3 and ap.arch = $4
+            "#,
+        )
+        .bind(app_id)
+        .bind(&version)
+        .bind(&os)
+        .bind(&arch)
+        .fetch_optional(&state.pool)
+        .await?;
+
+        let mut reused: Option<(PathBuf, String, bool)> = None;
+        if let Some(pkg_path) = existing_pkg_path.as_deref() {
+            if let Ok((tmp_path, icon_name)) =
+                extract_icon_from_pkg(std::path::Path::new(pkg_path)).await
+            {
+                reused = Some((tmp_path, icon_name, true));
+            }
+        }
+
+        if reused.is_none() {
+            let app_icon: Option<(String, String)> = sqlx::query_as(
+                r#"
+                select cf.local_path, cf.filename
+                from apps a
+                join cached_files cf on cf.id = a.icon_file_id
+                where a.id = $1
+                "#,
+            )
+            .bind(app_id)
+            .fetch_optional(&state.pool)
+            .await?;
+            if let Some((local_path, icon_name)) = app_icon {
+                reused = Some((PathBuf::from(local_path), icon_name, false));
+            }
+        }
+
+        let (src_path, icon_name, cleanup_src) = reused.ok_or_else(|| {
             AppError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Could not write icon: {}", e),
+                StatusCode::BAD_REQUEST,
+                "Icon is required (upload one, or reuse an existing package icon)",
             )
         })?;
+
+        let icon_name = sanitize_filename(&icon_name);
+        let ext = std::path::Path::new(&icon_name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if ext != "png" && ext != "svg" {
+            return Err(AppError::new(
+                StatusCode::BAD_REQUEST,
+                "Existing icon must be .png or .svg",
+            ));
+        }
+
+        let icon_path = work_dir.join(&icon_name);
+        tokio::fs::copy(&src_path, &icon_path).await.map_err(|e| {
+            AppError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not reuse icon: {}", e),
+            )
+        })?;
+        if cleanup_src {
+            let _ = tokio::fs::remove_file(&src_path).await;
+        }
+        (icon_name, icon_path, false)
+    };
     for (doc_name, doc_bytes) in &docs {
         let path = work_dir.join("docs").join(doc_name);
         let _ = tokio::fs::write(&path, doc_bytes).await;
@@ -3014,14 +3109,16 @@ async fn build_app_package(
     );
     let stored = store_local_file_as_cached(&state, &pkg_out, &pkg_filename, &prefix).await?;
 
-    let icon_prefix = format!("apps/{}/icon", sanitize_bucket(&slug));
-    let icon_stored =
-        store_local_file_as_cached(&state, &icon_path, &icon_name, &icon_prefix).await?;
-    let _ = sqlx::query("update apps set icon_file_id = $1 where id = $2")
-        .bind(icon_stored.id)
-        .bind(app_id)
-        .execute(&state.pool)
-        .await;
+    if should_store_app_icon {
+        let icon_prefix = format!("apps/{}/icon", sanitize_bucket(&slug));
+        let icon_stored =
+            store_local_file_as_cached(&state, &icon_path, &icon_name, &icon_prefix).await?;
+        let _ = sqlx::query("update apps set icon_file_id = $1 where id = $2")
+            .bind(icon_stored.id)
+            .bind(app_id)
+            .execute(&state.pool)
+            .await;
+    }
 
     let package_id = Uuid::new_v4();
     sqlx::query(
@@ -3355,7 +3452,10 @@ async fn api_user_from_bearer(state: &AppState, headers: &HeaderMap) -> AppResul
     Ok((user, token_id))
 }
 
-async fn api_principal_from_bearer(state: &AppState, headers: &HeaderMap) -> AppResult<ApiPrincipal> {
+async fn api_principal_from_bearer(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> AppResult<ApiPrincipal> {
     let token = extract_bearer(headers)
         .ok_or_else(|| AppError::new_plain(StatusCode::UNAUTHORIZED, "Bearer token required"))?;
     if token.len() < 24 {
@@ -3456,6 +3556,23 @@ async fn api_latest_package(
     };
 
     let record: Option<(String, String, String, String, Uuid)> = match principal {
+        ApiPrincipal::User(user) if is_writer(&user) => {
+            sqlx::query_as::<_, (String, String, String, String, Uuid)>(
+                r#"
+                select p.version, p.os, p.arch, p.pkg_sha256, p.pkg_file_id
+                from apps a
+                join app_packages p on p.app_id = a.id
+                where a.slug = $1 and p.os = $2 and (p.arch = $3 or p.arch = 'any')
+                order by p.created_at desc, (p.arch = $3) desc
+                limit 1
+                "#,
+            )
+            .bind(&slug)
+            .bind(&os)
+            .bind(&arch)
+            .fetch_optional(&state.pool)
+            .await?
+        }
         ApiPrincipal::User(user) => {
             sqlx::query_as::<_, (String, String, String, String, Uuid)>(
                 r#"
@@ -3464,7 +3581,7 @@ async fn api_latest_package(
                 join app_assignments aa on aa.app_id = a.id
                 join app_packages p on p.app_id = a.id
                 where a.slug = $1 and aa.user_id = $2 and p.os = $3 and (p.arch = $4 or p.arch = 'any')
-                order by (p.arch = $4) desc, p.created_at desc
+                order by p.created_at desc, (p.arch = $4) desc
                 limit 1
                 "#,
             )
@@ -3488,7 +3605,7 @@ async fn api_latest_package(
                 from apps a
                 join app_packages p on p.app_id = a.id
                 where a.slug = $1 and a.id = $2 and p.os = $3 and (p.arch = $4 or p.arch = 'any')
-                order by (p.arch = $4) desc, p.created_at desc
+                order by p.created_at desc, (p.arch = $4) desc
                 limit 1
                 "#,
             )
@@ -3542,6 +3659,43 @@ async fn api_download_package(
         .filter(|s| !s.is_empty());
 
     let file_id: Option<Uuid> = match principal {
+        ApiPrincipal::User(user) if is_writer(&user) => match version_filter {
+            Some(version) => {
+                sqlx::query_scalar::<_, Uuid>(
+                    r#"
+                    select p.pkg_file_id
+                    from apps a
+                    join app_packages p on p.app_id = a.id
+                    where a.slug = $1 and p.os = $2 and (p.arch = $3 or p.arch = 'any') and p.version = $4
+                    order by p.created_at desc, (p.arch = $3) desc
+                    limit 1
+                    "#,
+                )
+                .bind(&slug)
+                .bind(&os)
+                .bind(&arch)
+                .bind(&version)
+                .fetch_optional(&state.pool)
+                .await?
+            }
+            None => {
+                sqlx::query_scalar::<_, Uuid>(
+                    r#"
+                    select p.pkg_file_id
+                    from apps a
+                    join app_packages p on p.app_id = a.id
+                    where a.slug = $1 and p.os = $2 and (p.arch = $3 or p.arch = 'any')
+                    order by p.created_at desc, (p.arch = $3) desc
+                    limit 1
+                    "#,
+                )
+                .bind(&slug)
+                .bind(&os)
+                .bind(&arch)
+                .fetch_optional(&state.pool)
+                .await?
+            }
+        },
         ApiPrincipal::User(user) => match version_filter {
             Some(version) => {
                 sqlx::query_scalar::<_, Uuid>(
@@ -3551,7 +3705,7 @@ async fn api_download_package(
                     join app_assignments aa on aa.app_id = a.id
                     join app_packages p on p.app_id = a.id
                     where a.slug = $1 and aa.user_id = $2 and p.os = $3 and (p.arch = $4 or p.arch = 'any') and p.version = $5
-                    order by (p.arch = $4) desc, p.created_at desc
+                    order by p.created_at desc, (p.arch = $4) desc
                     limit 1
                     "#,
                 )
@@ -3571,7 +3725,7 @@ async fn api_download_package(
                     join app_assignments aa on aa.app_id = a.id
                     join app_packages p on p.app_id = a.id
                     where a.slug = $1 and aa.user_id = $2 and p.os = $3 and (p.arch = $4 or p.arch = 'any')
-                    order by (p.arch = $4) desc, p.created_at desc
+                    order by p.created_at desc, (p.arch = $4) desc
                     limit 1
                     "#,
                 )
@@ -3598,7 +3752,7 @@ async fn api_download_package(
                         from apps a
                         join app_packages p on p.app_id = a.id
                         where a.slug = $1 and a.id = $2 and p.os = $3 and (p.arch = $4 or p.arch = 'any') and p.version = $5
-                        order by (p.arch = $4) desc, p.created_at desc
+                        order by p.created_at desc, (p.arch = $4) desc
                         limit 1
                         "#,
                     )
@@ -3617,7 +3771,7 @@ async fn api_download_package(
                         from apps a
                         join app_packages p on p.app_id = a.id
                         where a.slug = $1 and a.id = $2 and p.os = $3 and (p.arch = $4 or p.arch = 'any')
-                        order by (p.arch = $4) desc, p.created_at desc
+                        order by p.created_at desc, (p.arch = $4) desc
                         limit 1
                         "#,
                     )
@@ -3689,6 +3843,22 @@ async fn api_latest_firmware(
         .unwrap_or_else(|| "stable".to_string());
 
     let record: Option<(String, String)> = match principal {
+        ApiPrincipal::User(user) if is_writer(&user) => {
+            sqlx::query_as::<_, (String, String)>(
+                r#"
+                select f.version, f.sha256
+                from apps a
+                join firmware_releases f on f.app_id = a.id
+                where a.slug = $1 and f.channel = $2
+                order by f.created_at desc
+                limit 1
+                "#,
+            )
+            .bind(&slug)
+            .bind(&channel)
+            .fetch_optional(&state.pool)
+            .await?
+        }
         ApiPrincipal::User(user) => {
             sqlx::query_as::<_, (String, String)>(
                 r#"
@@ -3765,6 +3935,41 @@ async fn api_download_firmware(
         .filter(|s| !s.is_empty());
 
     let file_id: Option<Uuid> = match principal {
+        ApiPrincipal::User(user) if is_writer(&user) => match version_filter {
+            Some(version) => {
+                sqlx::query_scalar::<_, Uuid>(
+                    r#"
+                    select f.file_id
+                    from apps a
+                    join firmware_releases f on f.app_id = a.id
+                    where a.slug = $1 and f.channel = $2 and f.version = $3
+                    order by f.created_at desc
+                    limit 1
+                    "#,
+                )
+                .bind(&slug)
+                .bind(&channel)
+                .bind(&version)
+                .fetch_optional(&state.pool)
+                .await?
+            }
+            None => {
+                sqlx::query_scalar::<_, Uuid>(
+                    r#"
+                    select f.file_id
+                    from apps a
+                    join firmware_releases f on f.app_id = a.id
+                    where a.slug = $1 and f.channel = $2
+                    order by f.created_at desc
+                    limit 1
+                    "#,
+                )
+                .bind(&slug)
+                .bind(&channel)
+                .fetch_optional(&state.pool)
+                .await?
+            }
+        },
         ApiPrincipal::User(user) => match version_filter {
             Some(version) => {
                 sqlx::query_scalar::<_, Uuid>(
@@ -3932,7 +4137,7 @@ async fn api_mint_bootstrap_token(
         from apps a
         join app_packages p on p.app_id = a.id
         where a.slug = $1 and p.os = $2 and (p.arch = $3 or p.arch = 'any')
-        order by (p.arch = $3) desc, p.created_at desc
+        order by p.created_at desc, (p.arch = $3) desc
         limit 1
         "#,
     )
@@ -4691,6 +4896,106 @@ async fn extract_installer_from_pkg(pkg_path: &std::path::Path) -> AppResult<(Pa
         Err(AppError::new(
             StatusCode::BAD_REQUEST,
             "Installer not found in package",
+        ))
+    })
+    .await
+    .map_err(|_| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Extraction failed"))?
+}
+
+async fn extract_icon_from_pkg(pkg_path: &std::path::Path) -> AppResult<(PathBuf, String)> {
+    let pkg_path = pkg_path.to_path_buf();
+    tokio::task::spawn_blocking(move || -> AppResult<(PathBuf, String)> {
+        use flate2::read::GzDecoder;
+        use std::fs::File as StdFile;
+        use std::io::Read as _;
+        use tar::Archive;
+
+        let manifest_json = {
+            let file = StdFile::open(&pkg_path)
+                .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "Package missing on disk"))?;
+            let dec = GzDecoder::new(file);
+            let mut archive = Archive::new(dec);
+            let mut manifest: Option<String> = None;
+            for entry in archive
+                .entries()
+                .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid package archive"))?
+            {
+                let mut entry = entry.map_err(|_| {
+                    AppError::new(StatusCode::BAD_REQUEST, "Invalid package archive")
+                })?;
+                let path = entry.path().map_err(|_| {
+                    AppError::new(StatusCode::BAD_REQUEST, "Invalid package archive")
+                })?;
+                if normalize_pkg_member_path(&path) == "manifest.json" {
+                    let mut buf = String::new();
+                    entry.read_to_string(&mut buf).map_err(|_| {
+                        AppError::new(StatusCode::BAD_REQUEST, "Invalid manifest.json")
+                    })?;
+                    manifest = Some(buf);
+                    break;
+                }
+            }
+            manifest.ok_or_else(|| {
+                AppError::new(StatusCode::BAD_REQUEST, "Package missing manifest.json")
+            })?
+        };
+
+        let manifest: PkgManifest = serde_json::from_str(&manifest_json)
+            .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid manifest.json"))?;
+        let Some(icon) = manifest.icon else {
+            return Err(AppError::new(
+                StatusCode::BAD_REQUEST,
+                "Package missing icon metadata",
+            ));
+        };
+        let wanted = normalize_pkg_member_path(std::path::Path::new(&icon.path));
+        if wanted.is_empty() {
+            return Err(AppError::new(
+                StatusCode::BAD_REQUEST,
+                "Invalid manifest.json icon path",
+            ));
+        }
+
+        let file_name = std::path::Path::new(&wanted)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("icon.png");
+        let file_name = sanitize_filename(file_name);
+
+        let out_path =
+            std::env::temp_dir().join(format!("pdes-cdn-icon-{}-{}", Uuid::new_v4(), file_name));
+
+        let file = StdFile::open(&pkg_path)
+            .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "Package missing on disk"))?;
+        let dec = GzDecoder::new(file);
+        let mut archive = Archive::new(dec);
+
+        for entry in archive
+            .entries()
+            .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid package archive"))?
+        {
+            let mut entry = entry
+                .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid package archive"))?;
+            let path = entry
+                .path()
+                .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid package archive"))?;
+            if normalize_pkg_member_path(&path) == wanted {
+                let mut out = StdFile::create(&out_path).map_err(|_| {
+                    AppError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Could not create temp icon file",
+                    )
+                })?;
+                std::io::copy(&mut entry, &mut out).map_err(|_| {
+                    AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "Failed extracting icon")
+                })?;
+                return Ok((out_path, file_name));
+            }
+        }
+
+        Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "Icon not found in package",
         ))
     })
     .await
