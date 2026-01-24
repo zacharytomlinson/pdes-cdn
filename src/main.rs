@@ -349,6 +349,12 @@ struct AppManageView {
     #[sqlx(skip)]
     #[serde(default)]
     targets: Vec<AppTargetView>,
+    #[sqlx(skip)]
+    #[serde(default)]
+    packages: Vec<AppPackageView>,
+    #[sqlx(skip)]
+    #[serde(default)]
+    firmware: Vec<AppFirmwareView>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -356,6 +362,23 @@ struct AppTargetView {
     os: String,
     arch: String,
     version: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct AppPackageView {
+    id: Uuid,
+    os: String,
+    arch: String,
+    version: String,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct AppFirmwareView {
+    id: Uuid,
+    channel: String,
+    version: String,
+    created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -522,7 +545,15 @@ async fn main() -> AppResult<()> {
         )
         .route("/apps/:slug/package/upload", post(upload_app_package))
         .route("/apps/:slug/package/build", post(build_app_package))
+        .route(
+            "/apps/:slug/package/:package_id/delete",
+            post(delete_app_package),
+        )
         .route("/apps/:slug/firmware/upload", post(upload_firmware))
+        .route(
+            "/apps/:slug/firmware/:firmware_id/delete",
+            post(delete_firmware_release),
+        )
         .route("/tokens", get(list_tokens).post(create_token))
         .route("/tokens/:id/revoke", post(revoke_token))
         .route("/tokens/app-upload", post(create_app_upload_token))
@@ -1152,6 +1183,49 @@ async fn render_apps_manage_with_toast(
             .push(AppTargetView { os, arch, version });
     }
 
+    let package_rows = sqlx::query_as::<_, (String, Uuid, String, String, String, DateTime<Utc>)>(
+        r#"
+        select a.slug, p.id, p.os, p.arch, p.version, p.created_at
+        from apps a
+        join app_packages p on p.app_id = a.id
+        order by a.created_at desc, p.created_at desc
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let mut packages_map: std::collections::BTreeMap<String, Vec<AppPackageView>> =
+        std::collections::BTreeMap::new();
+    for (slug, id, os, arch, version, created_at) in package_rows {
+        packages_map.entry(slug).or_default().push(AppPackageView {
+            id,
+            os,
+            arch,
+            version,
+            created_at,
+        });
+    }
+
+    let firmware_rows = sqlx::query_as::<_, (String, Uuid, String, String, DateTime<Utc>)>(
+        r#"
+            select a.slug, f.id, f.channel, f.version, f.created_at
+            from apps a
+            join firmware_releases f on f.app_id = a.id
+            order by a.created_at desc, f.created_at desc
+            "#,
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let mut firmware_map: std::collections::BTreeMap<String, Vec<AppFirmwareView>> =
+        std::collections::BTreeMap::new();
+    for (slug, id, channel, version, created_at) in firmware_rows {
+        firmware_map.entry(slug).or_default().push(AppFirmwareView {
+            id,
+            channel,
+            version,
+            created_at,
+        });
+    }
+
     let assigned_rows = sqlx::query_as::<_, (String, Uuid, String)>(
         r#"
         select a.slug, u.id, u.email
@@ -1184,6 +1258,8 @@ async fn render_apps_manage_with_toast(
             .unwrap_or_else(|| "?".to_string());
         app.assigned_users = assigned_map.remove(&app.slug).unwrap_or_default();
         app.targets = targets_map.remove(&app.slug).unwrap_or_default();
+        app.packages = packages_map.remove(&app.slug).unwrap_or_default();
+        app.firmware = firmware_map.remove(&app.slug).unwrap_or_default();
     }
 
     let users =
@@ -2263,6 +2339,84 @@ async fn upload_app_package(
     Ok((jar, Redirect::to(&return_to)).into_response())
 }
 
+async fn delete_app_package(
+    Path((slug, package_id)): Path<(String, Uuid)>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Form(form): Form<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+
+    let slug = sanitize_slug(&slug);
+    let return_to = safe_return_to(form.get("return_to").map(|s| s.as_str()));
+
+    let record: Option<(Uuid, String)> = sqlx::query_as(
+        r#"
+        select p.pkg_file_id, f.local_path
+        from apps a
+        join app_packages p on p.app_id = a.id
+        join cached_files f on f.id = p.pkg_file_id
+        where a.slug = $1 and p.id = $2
+        "#,
+    )
+    .bind(&slug)
+    .bind(package_id)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    let Some((pkg_file_id, local_path)) = record else {
+        let return_to = add_query_param(&return_to, "toast_error", "Package not found.");
+        return Ok((jar, Redirect::to(&return_to)).into_response());
+    };
+
+    let deleted =
+        sqlx::query_scalar::<_, bool>("delete from app_packages where id = $1 returning true")
+            .bind(package_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .unwrap_or(false);
+    if !deleted {
+        let return_to = add_query_param(&return_to, "toast_error", "Package not found.");
+        return Ok((jar, Redirect::to(&return_to)).into_response());
+    }
+
+    let still_referenced: bool = sqlx::query_scalar(
+        r#"
+        select
+          exists(select 1 from app_packages where pkg_file_id = $1)
+          or exists(select 1 from firmware_releases where file_id = $1)
+          or exists(select 1 from apps where icon_file_id = $1)
+        "#,
+    )
+    .bind(pkg_file_id)
+    .fetch_one(&state.pool)
+    .await?;
+
+    if !still_referenced {
+        if let Some(path) = resolve_cache_path(&state, &local_path).await? {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        let _ = sqlx::query("delete from cached_files where id = $1")
+            .bind(pkg_file_id)
+            .execute(&state.pool)
+            .await;
+    }
+
+    state.file_by_id_cache.invalidate_all();
+
+    let return_to = add_query_param(&return_to, "toast_success", "Package deleted.");
+    Ok((jar, Redirect::to(&return_to)).into_response())
+}
+
 async fn build_app_package(
     Path(slug): Path<String>,
     State(state): State<AppState>,
@@ -2737,6 +2891,83 @@ async fn upload_firmware(
     state.file_by_id_cache.invalidate_all();
     let return_to = safe_return_to(return_to.as_deref());
     let return_to = add_query_param(&return_to, "toast_success", "Uploaded firmware.");
+    Ok((jar, Redirect::to(&return_to)).into_response())
+}
+
+async fn delete_firmware_release(
+    Path((slug, firmware_id)): Path<(String, Uuid)>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Form(form): Form<HashMap<String, String>>,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+
+    let slug = sanitize_slug(&slug);
+    let return_to = safe_return_to(form.get("return_to").map(|s| s.as_str()));
+
+    let record: Option<(Uuid, String)> = sqlx::query_as(
+        r#"
+        select f.file_id, cf.local_path
+        from apps a
+        join firmware_releases f on f.app_id = a.id
+        join cached_files cf on cf.id = f.file_id
+        where a.slug = $1 and f.id = $2
+        "#,
+    )
+    .bind(&slug)
+    .bind(firmware_id)
+    .fetch_optional(&state.pool)
+    .await?;
+
+    let Some((file_id, local_path)) = record else {
+        let return_to = add_query_param(&return_to, "toast_error", "Firmware not found.");
+        return Ok((jar, Redirect::to(&return_to)).into_response());
+    };
+
+    let deleted =
+        sqlx::query_scalar::<_, bool>("delete from firmware_releases where id = $1 returning true")
+            .bind(firmware_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .unwrap_or(false);
+    if !deleted {
+        let return_to = add_query_param(&return_to, "toast_error", "Firmware not found.");
+        return Ok((jar, Redirect::to(&return_to)).into_response());
+    }
+
+    let still_referenced: bool = sqlx::query_scalar(
+        r#"
+        select
+          exists(select 1 from app_packages where pkg_file_id = $1)
+          or exists(select 1 from firmware_releases where file_id = $1)
+          or exists(select 1 from apps where icon_file_id = $1)
+        "#,
+    )
+    .bind(file_id)
+    .fetch_one(&state.pool)
+    .await?;
+
+    if !still_referenced {
+        if let Some(path) = resolve_cache_path(&state, &local_path).await? {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        let _ = sqlx::query("delete from cached_files where id = $1")
+            .bind(file_id)
+            .execute(&state.pool)
+            .await;
+    }
+
+    state.file_by_id_cache.invalidate_all();
+    let return_to = add_query_param(&return_to, "toast_success", "Firmware deleted.");
     Ok((jar, Redirect::to(&return_to)).into_response())
 }
 

@@ -289,14 +289,53 @@
 	                                </div>
 	                            </form>
 
-	                        <details style="margin-top: 10px;">
-	                            <summary>Packages</summary>
-	                            <div class="stack" style="margin-top: 12px;">
-	                                <p class="muted" style="margin: 0;">Uploading a new archive with a new version creates a new version. Uploading with an existing version replaces that version.</p>
-	                                <details style="margin-top: 10px;">
-                                    <summary>Build package (recommended)</summary>
-                                    <form method="post" action="/apps/{{ app.slug }}/package/build" enctype="multipart/form-data" style="margin-top: 12px;">
-                                        <input type="hidden" name="return_to" value="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}">
+		                        <details style="margin-top: 10px;">
+		                            <summary>Packages</summary>
+		                            <div class="stack" style="margin-top: 12px;">
+		                                <p class="muted" style="margin: 0;">Uploading a new archive with a new version creates a new version. Uploading with an existing version replaces that version.</p>
+		                                {% if app.packages is defined and app.packages | length > 0 %}
+		                                <div class="stack" style="gap: 10px;">
+		                                    <h4 style="margin: 0;">Existing packages</h4>
+		                                    <table class="table-fixed">
+		                                        <thead>
+		                                            <tr>
+		                                                <th style="width: 22%;">OS</th>
+		                                                <th style="width: 22%;">Arch</th>
+		                                                <th style="width: 26%;">Version</th>
+		                                                <th style="width: 30%;">Actions</th>
+		                                            </tr>
+		                                        </thead>
+		                                        <tbody>
+		                                            {% for p in app.packages %}
+		                                            <tr>
+		                                                <td class="truncate"><code>{{ p.os }}</code></td>
+		                                                <td class="truncate"><code>{{ p.arch }}</code></td>
+		                                                <td class="truncate"><code>{{ p.version }}</code></td>
+		                                                <td>
+		                                                    <form method="post"
+		                                                          action="/apps/{{ app.slug }}/package/{{ p.id }}/delete"
+		                                                          data-confirm="Delete package {{ p.os }}/{{ p.arch }} v{{ p.version }}? This cannot be undone."
+		                                                          style="margin: 0;">
+		                                                        <input type="hidden" name="return_to" value="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}">
+		                                                        <button type="submit"
+		                                                                class="icon-btn btn-compact"
+		                                                                style="background: linear-gradient(120deg, #ef4444, #f97316); color: #0b1222;">
+		                                                            Delete
+		                                                        </button>
+		                                                    </form>
+		                                                </td>
+		                                            </tr>
+		                                            {% endfor %}
+		                                        </tbody>
+		                                    </table>
+		                                </div>
+		                                {% else %}
+		                                <p class="muted" style="margin: 0;">No packages uploaded yet.</p>
+		                                {% endif %}
+		                                <details style="margin-top: 10px;">
+	                                    <summary>Build package (recommended)</summary>
+	                                    <form method="post" action="/apps/{{ app.slug }}/package/build" enctype="multipart/form-data" style="margin-top: 12px;">
+	                                        <input type="hidden" name="return_to" value="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}">
                                         <div class="stack">
                                             <label for="pkg-os-{{ app.slug }}">OS</label>
                                             <select id="pkg-os-{{ app.slug }}" name="os" required>
@@ -377,12 +416,47 @@
 	                            </div>
 	                        </details>
 
-	                        <details style="margin-top: 10px;">
-	                            <summary>Firmware</summary>
-	                            <form method="post" action="/apps/{{ app.slug }}/firmware/upload" enctype="multipart/form-data" style="margin-top: 12px;">
-	                                <input type="hidden" name="return_to" value="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}">
-	                                <div class="stack">
-                                    <label for="fw-channel-{{ app.slug }}">Channel</label>
+		                        <details style="margin-top: 10px;">
+		                            <summary>Firmware</summary>
+		                            {% if app.firmware is defined and app.firmware | length > 0 %}
+		                            <div class="stack" style="margin-top: 12px;">
+		                                <h4 style="margin: 0;">Existing firmware</h4>
+		                                <table class="table-fixed">
+		                                    <thead>
+		                                        <tr>
+		                                            <th style="width: 30%;">Channel</th>
+		                                            <th style="width: 40%;">Version</th>
+		                                            <th style="width: 30%;">Actions</th>
+		                                        </tr>
+		                                    </thead>
+		                                    <tbody>
+		                                        {% for f in app.firmware %}
+		                                        <tr>
+		                                            <td class="truncate"><code>{{ f.channel }}</code></td>
+		                                            <td class="truncate"><code>{{ f.version }}</code></td>
+		                                            <td>
+		                                                <form method="post"
+		                                                      action="/apps/{{ app.slug }}/firmware/{{ f.id }}/delete"
+		                                                      data-confirm="Delete firmware {{ f.channel }} v{{ f.version }}? This cannot be undone."
+		                                                      style="margin: 0;">
+		                                                    <input type="hidden" name="return_to" value="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}">
+		                                                    <button type="submit"
+		                                                            class="icon-btn btn-compact"
+		                                                            style="background: linear-gradient(120deg, #ef4444, #f97316); color: #0b1222;">
+		                                                        Delete
+		                                                    </button>
+		                                                </form>
+		                                            </td>
+		                                        </tr>
+		                                        {% endfor %}
+		                                    </tbody>
+		                                </table>
+		                            </div>
+		                            {% endif %}
+		                            <form method="post" action="/apps/{{ app.slug }}/firmware/upload" enctype="multipart/form-data" style="margin-top: 12px;">
+		                                <input type="hidden" name="return_to" value="/apps/manage?edit={{ app.slug }}&app={{ app.slug }}">
+		                                <div class="stack">
+	                                    <label for="fw-channel-{{ app.slug }}">Channel</label>
                                     <input id="fw-channel-{{ app.slug }}" name="channel" type="text" value="stable" placeholder="stable">
                                 </div>
                                 <div class="stack">
