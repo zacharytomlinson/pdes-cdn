@@ -117,6 +117,80 @@ This node can serve desktop app installers and firmware artifacts, with a bearer
 1. Create an API token in the portal at `GET /tokens` (token is shown once).
 2. Use it on API requests: `Authorization: Bearer <token>`.
 
+### Bootstrap installer flow (CI → device token)
+
+If you want a CI job (or provisioning flow) to download a platform-specific installer `.pkg` and mint a **device token** (scoped to one app + OS/arch), use the bootstrap endpoints.
+
+**How it works**
+- `POST /api/bootstrap/mint` returns a short-lived `bootstrap_token` + a direct `pkg_url`.
+- `GET /bootstrap/<bootstrap_token>/pkg` downloads the `.pkg` (each call consumes one use).
+- `POST /bootstrap/<bootstrap_token>/exchange[?name=…]` mints a long-lived `device_token` for that app + OS/arch (also consumes one use).
+
+**1) Mint a bootstrap token (writer API token required)**
+
+Create a writer API token in `GET /tokens` and use it here:
+
+```bash
+BASE_URL="https://apps.example.com"
+WRITER_API_TOKEN="..."
+APP_SLUG="my-app"
+TARGET="linux:x86_64" # os:arch
+
+curl -sS \
+  -H "Authorization: Bearer ${WRITER_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{\"app_slug\":\"${APP_SLUG}\",\"target\":\"${TARGET}\",\"expires_in_seconds\":3600,\"max_uses\":5}" \
+  "${BASE_URL}/api/bootstrap/mint"
+```
+
+Response JSON includes:
+- `bootstrap_token`
+- `pkg_url` (absolute URL for downloading the `.pkg`)
+
+Example (extract fields with `jq`):
+
+```bash
+resp="$(
+  curl -sS \
+    -H "Authorization: Bearer ${WRITER_API_TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d "{\"app_slug\":\"${APP_SLUG}\",\"target\":\"${TARGET}\"}" \
+    "${BASE_URL}/api/bootstrap/mint"
+)"
+BOOTSTRAP_TOKEN="$(jq -r '.bootstrap_token' <<<"$resp")"
+PKG_URL="$(jq -r '.pkg_url' <<<"$resp")"
+```
+
+**2) Download the `.pkg`**
+
+```bash
+curl -fL "${PKG_URL}" -o "${APP_SLUG}.pkg"
+```
+
+**3) Exchange bootstrap token for a device token**
+
+```bash
+curl -sS -X POST \
+  "${BASE_URL}/bootstrap/${BOOTSTRAP_TOKEN}/exchange?name=$(hostname)" \
+  | jq .
+```
+
+Response JSON includes:
+- `device_token`
+- convenience URLs like `package_latest_url` and `firmware_latest_url`
+
+**4) Use the device token for update checks**
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer ${DEVICE_TOKEN}" \
+  "${BASE_URL}/api/apps/${APP_SLUG}/package/latest"
+```
+
+Notes:
+- A `device_token` is valid only for the OS/arch it was minted for; if you pass `os/arch` query params they must match.
+- A `bootstrap_token` is limited by `expires_at` and `max_uses`. Both `/pkg` and `/exchange` increment use count, so set `max_uses` accordingly.
+
 ### Package (installer) updates
 
 - Building a `.pkg` in CI: use `scripts/build_pkg.sh` to bundle your installer + icon into the `.pkg` format this server expects.

@@ -721,7 +721,14 @@ async fn do_login(
     }
 
     if user.must_reset {
-        let token = issue_reset_token(&state, user.id).await?;
+        let existing = match (&user.reset_token, user.reset_token_expires) {
+            (Some(token), Some(expires)) if expires > Utc::now() => Some(token.clone()),
+            _ => None,
+        };
+        let token = match existing {
+            Some(t) => t,
+            None => issue_reset_token(&state, user.id).await?,
+        };
         info!(user_id = %user.id, email = %user.email, "login requires password reset");
         return Ok(Redirect::to(&format!("/reset/confirm/{}", token)).into_response());
     }
@@ -847,13 +854,38 @@ async fn do_reset_confirm(
         .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Could not hash password"))?
         .to_string();
 
-    sqlx::query(
-        "update users set password_hash = $1, reset_token = null, reset_token_expires = null, must_reset = false where id = $2",
+    let result = sqlx::query(
+        r#"
+        update users
+        set
+            password_hash = $1,
+            reset_token = null,
+            reset_token_expires = null,
+            must_reset = false
+        where id = $2
+          and reset_token = $3
+          and reset_token_expires is not null
+          and reset_token_expires > now()
+        "#,
     )
     .bind(password_hash)
     .bind(user.id)
+    .bind(&token)
     .execute(&state.pool)
     .await?;
+    if result.rows_affected() == 0 {
+        let mut ctx = TeraContext::new();
+        ctx.insert(
+            "error",
+            "That reset link is invalid or has expired. Request a new one.",
+        );
+        ctx.insert(
+            "toast_error",
+            "That reset link is invalid or has expired. Request a new one.",
+        );
+        let html = render_template(&state, "reset_request.html", ctx)?;
+        return Ok(html.into_response());
+    }
 
     info!(user_id = %user.id, email = %user.email, "password reset confirmed");
     Ok(Redirect::to("/login").into_response())
@@ -911,13 +943,97 @@ async fn invite_user(
         .bind(&email)
         .fetch_optional(&state.pool)
         .await?;
-    if existing.is_some() {
+    if let Some(existing_id) = existing {
+        let existing = sqlx::query_as::<_, (String, bool)>(
+            "select permission, must_reset from users where id = $1",
+        )
+        .bind(existing_id)
+        .fetch_one(&state.pool)
+        .await?;
+
+        let (permission, must_reset) = existing;
+        if !permission.eq_ignore_ascii_case("reader") {
+            let response = render_apps_manage_with_toast(
+                &state,
+                &user,
+                Some("That user exists and is not a reader account."),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+            return Ok((jar, response).into_response());
+        }
+
+        if !must_reset {
+            let response = render_apps_manage_with_toast(
+                &state,
+                &user,
+                Some("User already exists"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+            return Ok((jar, response).into_response());
+        }
+
+        let placeholder: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(16)
+            .map(char::from)
+            .collect();
+        let salt = SaltString::generate(&mut OsRng);
+        let password_hash = Argon2::default()
+            .hash_password(placeholder.as_bytes(), &salt)
+            .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Could not hash password"))?
+            .to_string();
+
+        sqlx::query("update users set password_hash = $1, must_reset = true where id = $2")
+            .bind(password_hash)
+            .bind(existing_id)
+            .execute(&state.pool)
+            .await?;
+
+        let reset_token = issue_invite_reset_token(&state, existing_id).await?;
+        info!(
+            user_id = %user.id,
+            email = %user.email,
+            invited_email = %email,
+            "re-sent user invite"
+        );
+
+        let base = base_url();
+        let reset_link = format!(
+            "{}/reset/confirm/{}",
+            base.trim_end_matches('/'),
+            reset_token
+        );
+        let body = format!(
+            "Welcome to the CDN portal.\n\nTemporary password: {pwd}\nLogin: {login}\nReset link (valid 7 days, required on first login): {link}\n\nIf you did not expect this, please contact support@palodurosystems.io.",
+            pwd = placeholder,
+            login = email,
+            link = reset_link
+        );
+        let body_html = render_email_template(&state, "email/invite.html", {
+            let mut ctx = TeraContext::new();
+            ctx.insert("login_email", &email);
+            ctx.insert("temporary_password", &placeholder);
+            ctx.insert("reset_link", &reset_link);
+            ctx
+        })?;
+        let subject = "Your CDN portal access";
+        let _ = send_email(&email, subject, &body, Some(body_html)).await;
+
+        let toast = format!("Re-sent invite to {}.", email);
         let response = render_apps_manage_with_toast(
             &state,
             &user,
-            Some("User already exists"),
             None,
-            None,
+            Some(&toast),
+            Some(&email),
             None,
             None,
         )
@@ -946,7 +1062,7 @@ async fn invite_user(
         .execute(&state.pool)
         .await?;
 
-    let reset_token = issue_reset_token(&state, id).await?;
+    let reset_token = issue_invite_reset_token(&state, id).await?;
     info!(user_id = %user.id, email = %user.email, invited_email = %email, "created user invite");
 
     let base = base_url();
@@ -956,7 +1072,7 @@ async fn invite_user(
         reset_token
     );
     let body = format!(
-        "Welcome to the CDN portal.\n\nTemporary password: {pwd}\nLogin: {login}\nReset link (required on first login): {link}\n\nIf you did not expect this, please contact support@palodurosystems.io.",
+        "Welcome to the CDN portal.\n\nTemporary password: {pwd}\nLogin: {login}\nReset link (valid 7 days, required on first login): {link}\n\nIf you did not expect this, please contact support@palodurosystems.io.",
         pwd = placeholder,
         login = email,
         link = reset_link
@@ -5159,13 +5275,17 @@ async fn ensure_valid_token(state: &AppState, token: &str) -> AppResult<User> {
         ));
     };
 
-    if let Some(expires) = user.reset_token_expires {
-        if expires < Utc::now() {
-            return Err(AppError::new(
-                StatusCode::BAD_REQUEST,
-                "Reset token has expired",
-            ));
-        }
+    let Some(expires) = user.reset_token_expires else {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "Reset token has expired",
+        ));
+    };
+    if expires < Utc::now() {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "Reset token has expired",
+        ));
     }
 
     Ok(user)
@@ -5283,13 +5403,17 @@ fn extract_bearer(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-async fn issue_reset_token(state: &AppState, user_id: Uuid) -> AppResult<String> {
+async fn issue_reset_token_with_ttl(
+    state: &AppState,
+    user_id: Uuid,
+    ttl: ChronoDuration,
+) -> AppResult<String> {
     let token: String = rand::thread_rng()
         .sample_iter(&Alphanumeric)
         .take(32)
         .map(char::from)
         .collect();
-    let expires = Utc::now() + ChronoDuration::minutes(30);
+    let expires = Utc::now() + ttl;
 
     sqlx::query(
         "update users set reset_token = $1, reset_token_expires = $2, must_reset = true where id = $3",
@@ -5303,6 +5427,14 @@ async fn issue_reset_token(state: &AppState, user_id: Uuid) -> AppResult<String>
     let token_preview: String = token.chars().take(8).collect();
     info!(user_id = %user_id, token_prefix = %token_preview, expires = %expires, "issued reset token");
     Ok(token)
+}
+
+async fn issue_reset_token(state: &AppState, user_id: Uuid) -> AppResult<String> {
+    issue_reset_token_with_ttl(state, user_id, ChronoDuration::minutes(30)).await
+}
+
+async fn issue_invite_reset_token(state: &AppState, user_id: Uuid) -> AppResult<String> {
+    issue_reset_token_with_ttl(state, user_id, ChronoDuration::days(7)).await
 }
 
 fn render_email_template(state: &AppState, name: &str, mut ctx: TeraContext) -> AppResult<String> {

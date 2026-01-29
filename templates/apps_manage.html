@@ -34,7 +34,7 @@
 </div>
 
 {% if new_invite_email %}
-<div class="alert success">Invited {{ new_invite_email }} with a temporary password emailed to them.</div>
+<div class="alert success">Sent invite email to {{ new_invite_email }} (including a temporary password).</div>
 {% endif %}
 
 <section class="card" style="margin-bottom: 18px;">
@@ -498,7 +498,7 @@
 
 <section class="card" style="margin-top: 18px;">
     <h2 style="margin-top: 0;">Invite user</h2>
-    <p class="muted">Invite a reader account (must reset password on first login).</p>
+    <p class="muted">Invite a reader account (must reset password on first login). Re-submitting the same email will re-send the invite if they haven’t completed setup yet.</p>
     <form method="post" action="/invite">
         <div class="stack">
             <label for="invite_email">User email</label>
