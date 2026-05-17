@@ -138,6 +138,82 @@
         .actions .pill-action { width: auto; }
         .table-scroll { max-width: 100%; overflow-x: auto; }
         .token code { display: inline-block; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+        .token-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: 12px;
+        }
+        .token-item {
+            display: grid;
+            grid-template-columns: minmax(220px, 1.25fr) minmax(360px, 2fr) auto;
+            gap: 16px;
+            align-items: center;
+            padding: 14px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: rgba(15,23,42,0.42);
+        }
+        .token-item-revoked { opacity: 0.72; }
+        .token-main {
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
+        .token-title-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+        .token-title {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .token-app {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+            color: var(--soft);
+            font-size: 14px;
+        }
+        .token-app span {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .token-app code { flex: 0 0 auto; }
+        .token-meta {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(130px, 1fr));
+            gap: 12px;
+            margin: 0;
+            min-width: 0;
+        }
+        .token-meta dt {
+            color: var(--soft);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+        .token-meta dd {
+            margin: 4px 0 0;
+            font-size: 14px;
+            font-variant-numeric: tabular-nums;
+            overflow-wrap: anywhere;
+        }
+        .token-actions {
+            display: flex;
+            justify-content: flex-end;
+        }
+        .token-actions form { margin: 0; }
+        .token-actions button { width: auto; padding: 10px 12px; }
         form {
             display: flex;
             flex-direction: column;
@@ -442,6 +518,10 @@
             70% { transform: scale(1); box-shadow: 0 0 0 12px rgba(14,165,233,0); }
             100% { transform: scale(0.9); box-shadow: 0 0 0 0 rgba(14,165,233,0); }
         }
+        @media (max-width: 1024px) {
+            .token-item { grid-template-columns: minmax(0, 1fr) auto; }
+            .token-meta { grid-column: 1 / -1; }
+        }
 	        @media (max-width: 725px) {
 	            body { padding: 18px 14px 48px; }
 	            header { flex-direction: column; align-items: flex-start; gap: 10px; }
@@ -456,6 +536,13 @@
 	            .app-card.selected .app-card-summary { flex-direction: column; }
 	            .app-card.selected .app-icon { width: 100%; max-width: none; font-size: 56px; }
 	            .app-card.selected .app-icon img { padding: 18px; }
+	            .token-item { grid-template-columns: 1fr; align-items: start; }
+	            .token-title { white-space: normal; overflow-wrap: anywhere; }
+	            .token-app { align-items: flex-start; flex-direction: column; }
+	            .token-app span { white-space: normal; }
+	            .token-meta { grid-template-columns: 1fr; }
+	            .token-actions { justify-content: flex-start; }
+	            .token-actions button { width: auto; }
 	        }
 	    </style>
 	</head>

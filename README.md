@@ -9,6 +9,7 @@ The repo includes a one-shot installer that provisions PostgreSQL + nginx + cert
 Prereqs:
 - A Debian server with a public DNS name (for certbot) and ports `80`/`443` reachable.
 - (Optional) A mounted storage disk for `CACHE_DIR` (example: `/mnt/main_ssd`).
+- (Optional, recommended with Cloudflare) Proxy the DNS record (orange cloud) and lock down the origin to Cloudflare.
 
 On the server, in a checkout of this repo:
 
@@ -16,7 +17,11 @@ On the server, in a checkout of this repo:
 sudo -i
 REPO=YOUR_ORG/pdes-cdn \
 RELEASE_TAG=vX.Y.Z \
-DOMAIN=cdn.example.com \
+DOMAIN=apps.example.com \
+# Optional: hostnames that should redirect to DOMAIN (space-separated)
+REDIRECT_DOMAINS="cdn.example.com" \
+# Optional: only allow inbound HTTP(S) from Cloudflare IPs (requires Proxied DNS)
+CLOUDFLARE_ONLY=1 \
 CERTBOT_EMAIL=admin@example.com \
 GH_DOWNLOAD_TOKEN=... \
 bash scripts/install_deps.sh
@@ -99,6 +104,7 @@ The installer seeds an initial writer user so you can log in and finish setup. T
 - Set `BASE_URL` correctly
 - Log in and reset the seeded password immediately (and/or rotate the user/email to your own)
 - Lock down network access as appropriate (nginx exposes `443`; the app itself listens on `3000` and should not be exposed directly)
+- If you use Cloudflare, ensure the DNS record is **Proxied** and consider `CLOUDFLARE_ONLY=1` to prevent origin-IP bypass traffic.
 
 ## Using the portal
 

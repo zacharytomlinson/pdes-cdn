@@ -177,46 +177,103 @@
                         {% endif %}
                     </div>
 
-                    <div class="stack">
-                        <div class="inline-actions">
-                            <h3 style="margin: 0;">Assigned users</h3>
-                            <a class="pill-action icon-link" href="#add-user-{{ app.slug }}" data-toggle-add-user="{{ app.slug }}" aria-label="Add user">
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                    <circle cx="12" cy="12" r="9"/>
-                                    <line x1="12" y1="8" x2="12" y2="16"/>
-                                    <line x1="8" y1="12" x2="16" y2="12"/>
-                                </svg>
-                            </a>
-                        </div>
+	                    <div class="stack">
+	                        <div class="inline-actions">
+	                            <h3 style="margin: 0;">Assigned users</h3>
+	                            <a class="pill-action icon-link" href="#add-user-{{ app.slug }}" data-toggle-add-user="{{ app.slug }}" aria-label="Add user">
+	                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+	                                    <circle cx="12" cy="12" r="9"/>
+	                                    <line x1="12" y1="8" x2="12" y2="16"/>
+	                                    <line x1="8" y1="12" x2="16" y2="12"/>
+	                                </svg>
+	                            </a>
+	                        </div>
 
-                        {% if app.assigned_users is defined and app.assigned_users | length > 0 %}
-                        <div class="stack" style="gap: 10px;">
-                            {% for u in app.assigned_users %}
-                            <div class="inline-actions" style="gap: 12px;">
-                                <div style="min-width: 0;">
-                                    <div class="truncate" style="display: inline-block;"><code>{{ u.email }}</code></div>
+	                        {% if app.assigned_users is defined and app.assigned_users | length > 0 %}
+                            {% set has_extra_fw_channels = app.firmware_channels is defined and app.firmware_channels | length > 1 %}
+
+                            {% if has_extra_fw_channels %}
+                            <form method="post" action="/apps/{{ app.slug }}/firmware/channel-access/bulk" style="margin: 0;">
+                                <input type="hidden" name="return_to" value="/apps/manage?app={{ app.slug }}">
+                                <div class="inline-actions" style="gap: 10px; flex-wrap: wrap;">
+                                    <span class="muted">Set firmware channels for all:</span>
+                                    <label class="muted" style="display: inline-flex; gap: 6px; align-items: center;">
+                                        <input type="checkbox" checked disabled>
+                                        <code>stable</code>
+                                    </label>
+                                    {% for ch in app.firmware_channels %}
+                                        {% if ch != "stable" %}
+                                        <label class="muted" style="display: inline-flex; gap: 6px; align-items: center;">
+                                            <input type="checkbox" name="channels" value="{{ ch }}">
+                                            <code>{{ ch }}</code>
+                                        </label>
+                                        {% endif %}
+                                    {% endfor %}
+                                    <button type="submit" class="icon-btn btn-compact secondary">Apply to all</button>
                                 </div>
-                                <div class="action-group">
-                                    <form method="post" action="/apps/{{ app.slug }}/unassign" data-confirm="Revoke this user from the app?">
-                                        <input type="hidden" name="user_id" value="{{ u.id }}">
-                                        <input type="hidden" name="return_to" value="/apps/manage?app={{ app.slug }}">
-	                                        <button type="submit" class="icon-btn btn-compact secondary" aria-label="Revoke user">
-                                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                                <path d="M3 6h18"/>
-                                                <path d="M8 6V4h8v2"/>
-                                                <path d="M19 6l-1 14H6L5 6"/>
-                                                <path d="M10 11v6"/>
-                                                <path d="M14 11v6"/>
-                                            </svg>
-                                            Revoke
-                                        </button>
-                                    </form>
-                                </div>
-                            </div>
-                            {% endfor %}
-                        </div>
-                        {% else %}
-                        <p class="muted" style="margin: 8px 0 0;">No users assigned.</p>
+                            </form>
+                            {% endif %}
+
+	                        <div class="stack" style="gap: 10px;">
+	                            {% for u in app.assigned_users %}
+	                            <div class="stack" style="gap: 6px;">
+	                                <div class="inline-actions" style="gap: 12px;">
+	                                    <div style="min-width: 0;">
+	                                        <div class="truncate" style="display: inline-block;"><code>{{ u.email }}</code></div>
+	                                    </div>
+	                                    <div class="action-group">
+	                                        <form method="post" action="/apps/{{ app.slug }}/unassign" data-confirm="Revoke this user from the app?">
+	                                            <input type="hidden" name="user_id" value="{{ u.id }}">
+	                                            <input type="hidden" name="return_to" value="/apps/manage?app={{ app.slug }}">
+		                                            <button type="submit" class="icon-btn btn-compact secondary" aria-label="Revoke user">
+	                                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+	                                                    <path d="M3 6h18"/>
+	                                                    <path d="M8 6V4h8v2"/>
+	                                                    <path d="M19 6l-1 14H6L5 6"/>
+	                                                    <path d="M10 11v6"/>
+	                                                    <path d="M14 11v6"/>
+	                                                </svg>
+	                                                Revoke
+	                                            </button>
+	                                        </form>
+	                                    </div>
+	                                </div>
+
+                                    {% if has_extra_fw_channels %}
+	                                <form method="post" action="/apps/{{ app.slug }}/firmware/channel-access" style="margin: 0;">
+	                                    <input type="hidden" name="user_id" value="{{ u.id }}">
+	                                    <input type="hidden" name="return_to" value="/apps/manage?app={{ app.slug }}">
+	                                    <div class="inline-actions" style="gap: 10px; flex-wrap: wrap;">
+	                                        <span class="muted">Firmware channels:</span>
+	                                        <label class="muted" style="display: inline-flex; gap: 6px; align-items: center;">
+	                                            <input type="checkbox" checked disabled>
+	                                            <code>stable</code>
+	                                        </label>
+	                                        {% if app.firmware_channels is defined and app.firmware_channels | length > 0 %}
+	                                            {% for ch in app.firmware_channels %}
+	                                                {% if ch != "stable" %}
+	                                                <label class="muted" style="display: inline-flex; gap: 6px; align-items: center;">
+	                                                    <input type="checkbox" name="channels" value="{{ ch }}" {% if ch in u.firmware_channels %}checked{% endif %}>
+	                                                    <code>{{ ch }}</code>
+	                                                </label>
+	                                                {% endif %}
+	                                            {% endfor %}
+	                                        {% endif %}
+	                                        <button type="submit" class="icon-btn btn-compact secondary">Save channels</button>
+	                                    </div>
+	                                </form>
+                                    {% else %}
+                                    <div class="inline-actions" style="gap: 10px; flex-wrap: wrap;">
+                                        <span class="muted">Firmware channels:</span>
+                                        <code>stable</code>
+                                        <span class="muted">(no other channels exist yet)</span>
+                                    </div>
+                                    {% endif %}
+	                            </div>
+	                            {% endfor %}
+	                        </div>
+	                        {% else %}
+	                        <p class="muted" style="margin: 8px 0 0;">No users assigned.</p>
                         {% endif %}
                     </div>
 

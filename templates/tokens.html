@@ -189,63 +189,69 @@
         {% if tlist | length == 0 %}
             <p class="muted">No app upload tokens yet.</p>
         {% else %}
-            <div class="table-scroll">
-                <table class="table-fixed">
-                    <colgroup>
-                        <col style="width: 22%;">
-                        <col style="width: 34%;">
-                        <col style="width: 16%;">
-                        <col style="width: 16%;">
-                        <col style="width: 6%;">
-                        <col style="width: 6%;">
-                    </colgroup>
-                    <thead>
-                    <tr>
-                        <th>App</th>
-                        <th>Name</th>
-                        <th class="num">Last used</th>
-                        <th class="num">Expires</th>
-                        <th class="num">Created</th>
-                        <th class="actions"> </th>
-                    </tr>
-                    </thead>
-                    <tbody>
-                    {% for t in tlist %}
-                        <tr>
-                            <td class="truncate"><code>{{ t.app_slug }}</code></td>
-                            <td class="truncate">
-                                {{ t.name }}
-                                {% if t.revoked_at %}<span class="badge" style="margin-left: 8px;">revoked</span>{% endif %}
-                            </td>
-                            <td class="num">{% if t.last_used_at %}{{ t.last_used_at }}{% else %}—{% endif %}</td>
-                            <td class="num">{% if t.expires_at %}{{ t.expires_at }}{% else %}—{% endif %}</td>
-                            <td class="num">{{ t.created_at }}</td>
-                            <td class="actions">
-                                {% if t.revoked_at %}
-                                    <button class="secondary icon-btn" type="button" disabled aria-label="Revoked">
+            <div class="token-list">
+                {% for t in tlist %}
+                    <article class="token-item {% if t.revoked_at %}token-item-revoked{% endif %}">
+                        <div class="token-main">
+                            <div class="token-title-row">
+                                <strong class="token-title">{{ t.name }}</strong>
+                                {% if t.revoked_at %}<span class="badge">revoked</span>{% endif %}
+                            </div>
+                            <div class="token-app">
+                                <span>{{ t.app_name }}</span>
+                                <code>{{ t.app_slug }}</code>
+                            </div>
+                        </div>
+                        <dl class="token-meta">
+                            <div>
+                                <dt>Last used</dt>
+                                <dd>
+                                    {% if t.last_used_at %}
+                                        <time datetime="{{ t.last_used_at }}">{{ t.last_used_at | date(format="%Y-%m-%d %H:%M UTC") }}</time>
+                                    {% else %}
+                                        Never
+                                    {% endif %}
+                                </dd>
+                            </div>
+                            <div>
+                                <dt>Expires</dt>
+                                <dd>
+                                    {% if t.expires_at %}
+                                        <time datetime="{{ t.expires_at }}">{{ t.expires_at | date(format="%Y-%m-%d %H:%M UTC") }}</time>
+                                    {% else %}
+                                        No expiry
+                                    {% endif %}
+                                </dd>
+                            </div>
+                            <div>
+                                <dt>Created</dt>
+                                <dd><time datetime="{{ t.created_at }}">{{ t.created_at | date(format="%Y-%m-%d %H:%M UTC") }}</time></dd>
+                            </div>
+                        </dl>
+                        <div class="token-actions">
+                            {% if t.revoked_at %}
+                                <button class="secondary icon-btn" type="button" disabled aria-label="Revoked">
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M18 6L6 18"/>
+                                        <path d="M6 6l12 12"/>
+                                    </svg>
+                                </button>
+                            {% else %}
+                                <form method="post" action="/tokens/app-upload/{{ t.id }}/revoke" onsubmit="return confirm('Revoke this app upload token?');">
+                                    <button class="secondary icon-btn" type="submit" aria-label="Revoke token">
                                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                                            <path d="M18 6L6 18"/>
-                                            <path d="M6 6l12 12"/>
+                                            <polyline points="3 6 5 6 21 6" />
+                                            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                                            <path d="M10 11v6" />
+                                            <path d="M14 11v6" />
+                                            <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
                                         </svg>
                                     </button>
-                                {% else %}
-                                    <form method="post" action="/tokens/app-upload/{{ t.id }}/revoke" onsubmit="return confirm('Revoke this app upload token?');">
-                                        <button class="secondary icon-btn" type="submit" aria-label="Revoke token">
-                                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                                                <polyline points="3 6 5 6 21 6" />
-                                                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-                                                <path d="M10 11v6" />
-                                                <path d="M14 11v6" />
-                                                <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-                                            </svg>
-                                        </button>
-                                    </form>
-                                {% endif %}
-                            </td>
-                        </tr>
-                    {% endfor %}
-                    </tbody>
-                </table>
+                                </form>
+                            {% endif %}
+                        </div>
+                    </article>
+                {% endfor %}
             </div>
         {% endif %}
     </section>

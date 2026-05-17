@@ -264,6 +264,8 @@ struct UserBrief {
 struct AssignedUserView {
     id: Uuid,
     email: String,
+    #[serde(default)]
+    firmware_channels: Vec<String>,
 }
 
 #[derive(Debug, Clone, FromRow, serde::Serialize)]
@@ -284,6 +286,7 @@ struct AppOptionRow {
 #[derive(Debug, Clone, FromRow, serde::Serialize)]
 struct AppUploadTokenRow {
     id: Uuid,
+    app_name: String,
     app_slug: String,
     name: String,
     created_at: DateTime<Utc>,
@@ -355,6 +358,9 @@ struct AppManageView {
     #[sqlx(skip)]
     #[serde(default)]
     firmware: Vec<AppFirmwareView>,
+    #[sqlx(skip)]
+    #[serde(default)]
+    firmware_channels: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -542,6 +548,14 @@ async fn main() -> AppResult<()> {
         .route(
             "/apps/:slug/firmware/latest/download",
             get(download_latest_firmware),
+        )
+        .route(
+            "/apps/:slug/firmware/channel-access",
+            post(set_firmware_channel_access),
+        )
+        .route(
+            "/apps/:slug/firmware/channel-access/bulk",
+            post(set_firmware_channel_access_bulk),
         )
         .route("/apps/:slug/package/upload", post(upload_app_package))
         .route("/apps/:slug/package/build", post(build_app_package))
@@ -1359,7 +1373,34 @@ async fn render_apps_manage_with_toast(
         assigned_map
             .entry(app_slug)
             .or_default()
-            .push(AssignedUserView { id: user_id, email });
+            .push(AssignedUserView {
+                id: user_id,
+                email,
+                firmware_channels: Vec::new(),
+            });
+    }
+
+    let access_rows = sqlx::query_as::<_, (String, Uuid, String)>(
+        r#"
+        select a.slug, fca.user_id, fca.channel
+        from apps a
+        join firmware_channel_access fca on fca.app_id = a.id
+        order by a.created_at desc, fca.channel
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let mut firmware_access_map: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<Uuid, Vec<String>>,
+    > = std::collections::BTreeMap::new();
+    for (app_slug, user_id, channel) in access_rows {
+        firmware_access_map
+            .entry(app_slug)
+            .or_default()
+            .entry(user_id)
+            .or_default()
+            .push(channel);
     }
 
     for app in &mut apps {
@@ -1376,6 +1417,25 @@ async fn render_apps_manage_with_toast(
         app.targets = targets_map.remove(&app.slug).unwrap_or_default();
         app.packages = packages_map.remove(&app.slug).unwrap_or_default();
         app.firmware = firmware_map.remove(&app.slug).unwrap_or_default();
+
+        if let Some(access_by_user) = firmware_access_map.get(&app.slug) {
+            for assigned in &mut app.assigned_users {
+                assigned.firmware_channels = access_by_user
+                    .get(&assigned.id)
+                    .cloned()
+                    .unwrap_or_default();
+            }
+        }
+
+        let mut channel_set = std::collections::BTreeSet::<String>::new();
+        channel_set.insert("stable".to_string());
+        for fw in &app.firmware {
+            let channel = sanitize_slug(&fw.channel);
+            if !channel.is_empty() {
+                channel_set.insert(channel);
+            }
+        }
+        app.firmware_channels = channel_set.into_iter().collect();
     }
 
     let users =
@@ -1586,8 +1646,186 @@ async fn unassign_app(
         .execute(&state.pool)
         .await?;
 
+    // Keep firmware channel grants tidy when unassigning.
+    sqlx::query("delete from firmware_channel_access where app_id = $1 and user_id = $2")
+        .bind(app_id)
+        .bind(user_id)
+        .execute(&state.pool)
+        .await?;
+
     let return_to = safe_return_to(form.get("return_to").map(|s| s.as_str()));
     let return_to = add_query_param(&return_to, "toast_success", "Revoked.");
+    Ok((jar, Redirect::to(&return_to)).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct SetFirmwareChannelAccessForm {
+    user_id: String,
+    #[serde(default)]
+    channels: Vec<String>,
+    return_to: Option<String>,
+}
+
+async fn set_firmware_channel_access(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Form(form): Form<SetFirmwareChannelAccessForm>,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+
+    let slug = sanitize_slug(&slug);
+    let user_id = Uuid::parse_str(form.user_id.trim())
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "Invalid user id"))?;
+
+    let mut channels_set = std::collections::BTreeSet::<String>::new();
+    for raw in form.channels {
+        let channel = sanitize_slug(raw.trim());
+        if channel.is_empty() || channel == "stable" {
+            continue;
+        }
+        channels_set.insert(channel);
+    }
+    let channels: Vec<String> = channels_set.into_iter().collect();
+
+    let app_id: Uuid = sqlx::query_scalar("select id from apps where slug = $1")
+        .bind(&slug)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "App not found"))?;
+
+    let assigned = sqlx::query_scalar::<_, bool>(
+        "select exists(select 1 from app_assignments where app_id = $1 and user_id = $2)",
+    )
+    .bind(app_id)
+    .bind(user_id)
+    .fetch_one(&state.pool)
+    .await?;
+    if !assigned {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "User is not assigned to this app",
+        ));
+    }
+
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("delete from firmware_channel_access where app_id = $1 and user_id = $2")
+        .bind(app_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    for channel in &channels {
+        sqlx::query(
+            r#"
+            insert into firmware_channel_access (app_id, user_id, channel)
+            values ($1, $2, $3)
+            on conflict do nothing
+            "#,
+        )
+        .bind(app_id)
+        .bind(user_id)
+        .bind(channel)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+
+    let return_to = safe_return_to(form.return_to.as_deref());
+    let msg = if channels.is_empty() {
+        "Firmware channel access set to stable only."
+    } else {
+        "Firmware channel access updated."
+    };
+    let return_to = add_query_param(&return_to, "toast_success", msg);
+    Ok((jar, Redirect::to(&return_to)).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct SetFirmwareChannelAccessBulkForm {
+    #[serde(default)]
+    channels: Vec<String>,
+    return_to: Option<String>,
+}
+
+async fn set_firmware_channel_access_bulk(
+    Path(slug): Path<String>,
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Form(form): Form<SetFirmwareChannelAccessBulkForm>,
+) -> AppResult<Response> {
+    let Some(user) = current_user(&state, &jar).await? else {
+        let jar = jar.remove(Cookie::from(SESSION_COOKIE));
+        return Ok((jar, Redirect::to("/login")).into_response());
+    };
+    if !is_writer(&user) {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "Writer permission required",
+        ));
+    }
+
+    let slug = sanitize_slug(&slug);
+    let app_id: Uuid = sqlx::query_scalar("select id from apps where slug = $1")
+        .bind(&slug)
+        .fetch_optional(&state.pool)
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "App not found"))?;
+
+    let mut channels_set = std::collections::BTreeSet::<String>::new();
+    for raw in form.channels {
+        let channel = sanitize_slug(raw.trim());
+        if channel.is_empty() || channel == "stable" {
+            continue;
+        }
+        channels_set.insert(channel);
+    }
+    let channels: Vec<String> = channels_set.into_iter().collect();
+
+    let assigned_user_ids =
+        sqlx::query_scalar::<_, Uuid>("select user_id from app_assignments where app_id = $1")
+            .bind(app_id)
+            .fetch_all(&state.pool)
+            .await?;
+
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("delete from firmware_channel_access where app_id = $1")
+        .bind(app_id)
+        .execute(&mut *tx)
+        .await?;
+    for user_id in assigned_user_ids {
+        for channel in &channels {
+            sqlx::query(
+                r#"
+                insert into firmware_channel_access (app_id, user_id, channel)
+                values ($1, $2, $3)
+                on conflict do nothing
+                "#,
+            )
+            .bind(app_id)
+            .bind(user_id)
+            .bind(channel)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+    tx.commit().await?;
+
+    let return_to = safe_return_to(form.return_to.as_deref());
+    let msg = if channels.is_empty() {
+        "Firmware channel access set to stable only for all assigned users."
+    } else {
+        "Firmware channel access updated for all assigned users."
+    };
+    let return_to = add_query_param(&return_to, "toast_success", msg);
     Ok((jar, Redirect::to(&return_to)).into_response())
 }
 
@@ -2238,6 +2476,14 @@ async fn latest_firmware_json(
             join app_assignments aa on aa.app_id = a.id
             join firmware_releases f on f.app_id = a.id
             where a.slug = $1 and aa.user_id = $2 and f.channel = $3
+              and (
+                $3 = 'stable'
+                or exists(
+                    select 1
+                    from firmware_channel_access fca
+                    where fca.app_id = a.id and fca.user_id = aa.user_id and fca.channel = $3
+                )
+              )
             order by f.created_at desc
             limit 1
             "#,
@@ -2309,6 +2555,14 @@ async fn download_latest_firmware(
             join app_assignments aa on aa.app_id = a.id
             join firmware_releases f on f.app_id = a.id
             where a.slug = $1 and aa.user_id = $2 and f.channel = $3
+              and (
+                $3 = 'stable'
+                or exists(
+                    select 1
+                    from firmware_channel_access fca
+                    where fca.app_id = a.id and fca.user_id = aa.user_id and fca.channel = $3
+                )
+              )
             order by f.created_at desc
             limit 1
             "#,
@@ -3292,6 +3546,7 @@ async fn populate_tokens_context(
         let app_upload_tokens = match sqlx::query_as::<_, AppUploadTokenRow>(
             r#"
             select t.id,
+                   a.name as app_name,
                    a.slug as app_slug,
                    t.name,
                    t.created_at,
@@ -3300,7 +3555,7 @@ async fn populate_tokens_context(
                    t.expires_at
             from app_upload_tokens t
             join apps a on a.id = t.app_id
-            order by t.created_at desc
+            order by (t.revoked_at is not null), t.created_at desc
             "#,
         )
         .fetch_all(&state.pool)
@@ -3807,6 +4062,7 @@ async fn api_upload_app_package(
     let mut is_writer_user_token = false;
     let mut app_upload_token_id: Option<Uuid> = None;
     let mut app_upload_token_app_id: Option<Uuid> = None;
+    let mut app_upload_token_app_slug: Option<String> = None;
 
     let user_record = sqlx::query_as::<_, ApiUserAuthRow>(
         r#"
@@ -3838,9 +4094,16 @@ async fn api_upload_app_package(
             must_reset: row.must_reset,
         };
         if !is_writer(&user) {
+            warn!(
+                user_id = %user.id,
+                email = %user.email,
+                permission = %user.permission,
+                request_slug = %slug,
+                "api_upload_app_package: forbidden user API token"
+            );
             return Err(AppError::new_plain(
                 StatusCode::FORBIDDEN,
-                "Writer permission required",
+                "Writer permission required for API token",
             ));
         }
         is_writer_user_token = true;
@@ -3849,20 +4112,21 @@ async fn api_upload_app_package(
             .execute(&state.pool)
             .await;
     } else {
-        let record: Option<(Uuid, Uuid)> = sqlx::query_as(
+        let record: Option<(Uuid, Uuid, String)> = sqlx::query_as(
             r#"
-            select id, app_id
-            from app_upload_tokens
-            where token_sha256 = $1
-              and revoked_at is null
-              and (expires_at is null or expires_at > now())
+            select t.id, t.app_id, a.slug
+            from app_upload_tokens t
+            join apps a on a.id = t.app_id
+            where t.token_sha256 = $1
+              and t.revoked_at is null
+              and (t.expires_at is null or t.expires_at > now())
             "#,
         )
         .bind(&token_sha256)
         .fetch_optional(&state.pool)
         .await?;
 
-        let Some((token_id, app_id)) = record else {
+        let Some((token_id, app_id, app_slug)) = record else {
             return Err(AppError::new_plain(
                 StatusCode::UNAUTHORIZED,
                 "Invalid bearer token",
@@ -3870,6 +4134,7 @@ async fn api_upload_app_package(
         };
         app_upload_token_id = Some(token_id);
         app_upload_token_app_id = Some(app_id);
+        app_upload_token_app_slug = Some(app_slug);
         let _ = sqlx::query("update app_upload_tokens set last_used_at = now() where id = $1")
             .bind(token_id)
             .execute(&state.pool)
@@ -3891,9 +4156,18 @@ async fn api_upload_app_package(
             ));
         };
         if scoped_app_id != app_id {
+            let scoped_slug = app_upload_token_app_slug
+                .as_deref()
+                .unwrap_or("a different app");
+            warn!(
+                token_id = %app_upload_token_id.unwrap_or_default(),
+                token_app_slug = %scoped_slug,
+                request_slug = %slug,
+                "api_upload_app_package: forbidden app upload token scope"
+            );
             return Err(AppError::new_plain(
                 StatusCode::FORBIDDEN,
-                "Token is not valid for this app",
+                format!("Token is scoped to app '{}', not '{}'", scoped_slug, slug),
             ));
         }
     }
@@ -4045,6 +4319,14 @@ async fn api_latest_firmware(
                 join app_assignments aa on aa.app_id = a.id
                 join firmware_releases f on f.app_id = a.id
                 where a.slug = $1 and aa.user_id = $2 and f.channel = $3
+                  and (
+                    $3 = 'stable'
+                    or exists(
+                        select 1
+                        from firmware_channel_access fca
+                        where fca.app_id = a.id and fca.user_id = aa.user_id and fca.channel = $3
+                    )
+                  )
                 order by f.created_at desc
                 limit 1
                 "#,
@@ -4157,6 +4439,14 @@ async fn api_download_firmware(
                     join app_assignments aa on aa.app_id = a.id
                     join firmware_releases f on f.app_id = a.id
                     where a.slug = $1 and aa.user_id = $2 and f.channel = $3 and f.version = $4
+                      and (
+                        $3 = 'stable'
+                        or exists(
+                            select 1
+                            from firmware_channel_access fca
+                            where fca.app_id = a.id and fca.user_id = aa.user_id and fca.channel = $3
+                        )
+                      )
                     order by f.created_at desc
                     limit 1
                     "#,
@@ -4176,6 +4466,14 @@ async fn api_download_firmware(
                     join app_assignments aa on aa.app_id = a.id
                     join firmware_releases f on f.app_id = a.id
                     where a.slug = $1 and aa.user_id = $2 and f.channel = $3
+                      and (
+                        $3 = 'stable'
+                        or exists(
+                            select 1
+                            from firmware_channel_access fca
+                            where fca.app_id = a.id and fca.user_id = aa.user_id and fca.channel = $3
+                        )
+                      )
                     order by f.created_at desc
                     limit 1
                     "#,
