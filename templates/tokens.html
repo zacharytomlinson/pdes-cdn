@@ -139,45 +139,43 @@
     {% if tokens | length == 0 %}
         <p class="muted">No tokens yet.</p>
     {% else %}
-        <div class="table-scroll">
-            <table class="table-fixed">
-                <colgroup>
-                    <col style="width: 52%;">
-                    <col style="width: 24%;">
-                    <col style="width: 16%;">
-                    <col style="width: 8%;">
-                </colgroup>
-                <thead>
-                <tr>
-                    <th>Name</th>
-                    <th class="num">Last used</th>
-                    <th class="num">Created</th>
-                    <th class="actions"> </th>
-                </tr>
-                </thead>
-                <tbody>
-                {% for t in tokens %}
-                    <tr>
-                        <td class="truncate">{{ t.name }}</td>
-                        <td class="num">{% if t.last_used_at %}{{ t.last_used_at }}{% else %}—{% endif %}</td>
-                        <td class="num">{{ t.created_at }}</td>
-                        <td class="actions">
-                            <form method="post" action="/tokens/{{ t.id }}/revoke" onsubmit="return confirm('Revoke this token?');">
-                                <button class="secondary icon-btn" type="submit" aria-label="Revoke token">
-                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                                        <polyline points="3 6 5 6 21 6" />
-                                        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-                                        <path d="M10 11v6" />
-                                        <path d="M14 11v6" />
-                                        <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-                                    </svg>
-                                </button>
-                            </form>
-                        </td>
-                    </tr>
-                {% endfor %}
-                </tbody>
-            </table>
+        <div class="token-list token-list-basic">
+            {% for t in tokens %}
+                <article class="token-item token-item-basic">
+                    <div class="token-main">
+                        <strong class="token-title">{{ t.name }}</strong>
+                    </div>
+                    <dl class="token-meta token-meta-basic">
+                        <div>
+                            <dt>Last used</dt>
+                            <dd>
+                                {% if t.last_used_at %}
+                                    <time datetime="{{ t.last_used_at }}">{{ t.last_used_at | date(format="%Y-%m-%d %H:%M UTC") }}</time>
+                                {% else %}
+                                    Never
+                                {% endif %}
+                            </dd>
+                        </div>
+                        <div>
+                            <dt>Created</dt>
+                            <dd><time datetime="{{ t.created_at }}">{{ t.created_at | date(format="%Y-%m-%d %H:%M UTC") }}</time></dd>
+                        </div>
+                    </dl>
+                    <div class="token-actions">
+                        <form method="post" action="/tokens/{{ t.id }}/revoke" onsubmit="return confirm('Revoke this token?');">
+                            <button class="secondary icon-btn" type="submit" aria-label="Revoke token">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="3 6 5 6 21 6" />
+                                    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                                    <path d="M10 11v6" />
+                                    <path d="M14 11v6" />
+                                    <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                                </svg>
+                            </button>
+                        </form>
+                    </div>
+                </article>
+            {% endfor %}
         </div>
     {% endif %}
 </section>

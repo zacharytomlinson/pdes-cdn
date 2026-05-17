@@ -155,6 +155,9 @@
             background: rgba(15,23,42,0.42);
         }
         .token-item-revoked { opacity: 0.72; }
+        .token-item-basic {
+            grid-template-columns: minmax(220px, 1.6fr) minmax(280px, 1.4fr) auto;
+        }
         .token-main {
             min-width: 0;
             display: flex;
@@ -194,6 +197,9 @@
             gap: 12px;
             margin: 0;
             min-width: 0;
+        }
+        .token-meta-basic {
+            grid-template-columns: repeat(2, minmax(130px, 1fr));
         }
         .token-meta dt {
             color: var(--soft);
@@ -521,6 +527,7 @@
         @media (max-width: 1024px) {
             .token-item { grid-template-columns: minmax(0, 1fr) auto; }
             .token-meta { grid-column: 1 / -1; }
+            .token-item-basic { grid-template-columns: minmax(0, 1fr) auto; }
         }
 	        @media (max-width: 725px) {
 	            body { padding: 18px 14px 48px; }
